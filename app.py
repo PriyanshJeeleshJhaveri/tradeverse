@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
 import os
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -6,32 +7,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from storage_paths import IS_VERCEL, prepare_storage
+
 import portfolio_db
 import price_service
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="public/static", static_url_path="/static")
 
-# ---------------------------------------------------------
-# Flask secret key
-# ---------------------------------------------------------
+# Vercel provides HTTPS in production. Keep the cookie settings explicit so
+# login sessions work correctly when Flask runs as a serverless function.
+FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "")
+if IS_VERCEL and not FLASK_SECRET_KEY:
+    raise RuntimeError("FLASK_SECRET_KEY must be configured in Vercel Environment Variables.")
+app.secret_key = FLASK_SECRET_KEY or "dev-only-tradeverse-secret"
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=IS_VERCEL,
+    SESSION_COOKIE_NAME="tradeverse_session",
+)
 
-app.secret_key = os.getenv("FLASK_SECRET_KEY")
-
-if not app.secret_key:
-    raise RuntimeError(
-        "FLASK_SECRET_KEY environment variable is not configured."
-    )
-
-
-# ---------------------------------------------------------
-# Database
-# ---------------------------------------------------------
-
-if os.getenv("VERCEL"):
-    DB_PATH = os.path.join("/tmp", "tradeverse.db")
-else:
-    DB_PATH = os.path.join(os.path.dirname(__file__), "tradeverse.db")
-
+DB_PATH, _TINYDB_RUNTIME_PATH = prepare_storage()
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin@123"
@@ -45,11 +41,15 @@ MARKET_FULL_NAMES = {
 }
 
 MARKET_CURRENCY_SYMBOL = {
-    "ISE": "₹",
+    "ISE": "\u20B9",   # INR
     "USE": "$",
     "CCME": "$",
 }
 
+
+# Initialize the file-backed stores when the module is imported. Vercel imports
+# the Flask module instead of executing the __main__ block.
+init_db_ready = False
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -59,7 +59,6 @@ def get_db_connection():
 
 def init_db():
     conn = get_db_connection()
-
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,51 +68,37 @@ def init_db():
             password TEXT NOT NULL
         )
     """)
-
     conn.commit()
     conn.close()
 
 
 def ensure_admin_account():
-    """Creates the default admin login and demo portfolio if missing."""
-
+    """Creates the default admin login (SQLite) + its demo portfolio (tinymongo), if missing."""
     conn = get_db_connection()
-
     admin = conn.execute(
-        "SELECT * FROM users WHERE username = ?",
-        (ADMIN_USERNAME,)
+        "SELECT * FROM users WHERE username = ?", (ADMIN_USERNAME,)
     ).fetchone()
 
     if admin is None:
         hashed_password = generate_password_hash(ADMIN_PASSWORD)
-
         conn.execute(
-            """
-            INSERT INTO users
-            (username, email, phone, password)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                ADMIN_USERNAME,
-                ADMIN_EMAIL,
-                ADMIN_PHONE,
-                hashed_password,
-            ),
+            "INSERT INTO users (username, email, phone, password) VALUES (?, ?, ?, ?)",
+            (ADMIN_USERNAME, ADMIN_EMAIL, ADMIN_PHONE, hashed_password),
         )
-
         conn.commit()
-
         admin = conn.execute(
-            "SELECT * FROM users WHERE username = ?",
-            (ADMIN_USERNAME,)
+            "SELECT * FROM users WHERE username = ?", (ADMIN_USERNAME,)
         ).fetchone()
 
     conn.close()
+    portfolio_db.ensure_admin_portfolio(admin["id"], admin["username"])
 
-    portfolio_db.ensure_admin_portfolio(
-        admin["id"],
-        admin["username"]
-    )
+
+# Run initialization at import time for Vercel and other WSGI/serverless hosts.
+init_db()
+if os.getenv("TRADEVERSE_BOOTSTRAP_ADMIN", "0") == "1":
+    ensure_admin_account()
+
 
 @app.route("/")
 def home():
@@ -265,30 +250,23 @@ def api_indices():
     if "user_id" not in session:
         return jsonify({"error": "not logged in"}), 401
 
-    return jsonify([
-        {
-            "symbol": "SPX",
-            "name": "S&P 500",
-            "price": 6250.00,
-            "change": 28.13,
-            "change_percent": 0.45
-        },
-        {
-            "symbol": "NIFTY",
-            "name": "NIFTY 50",
-            "price": 25000.00,
-            "change": 95.00,
-            "change_percent": 0.38
-        },
-        {
-            "symbol": "SENSEX",
-            "name": "SENSEX",
-            "price": 82000.00,
-            "change": 336.20,
-            "change_percent": 0.41
-        }
-    ])
+    labels = ("S&P 500", "NIFTY 50", "SENSEX")
 
+    def _get_index(label):
+        quote = price_service.get_index_quote(label)
+        if quote is None:
+            quote = {
+                "symbol": price_service.INDEX_SYMBOLS.get(label, label),
+                "name": label,
+                "price": None,
+                "change": None,
+                "change_percent": None,
+            }
+        return quote
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        results = list(executor.map(_get_index, labels))
+    return jsonify(results)
 
 @app.route("/api/search")
 def api_search():
@@ -349,8 +327,6 @@ def api_asset_chart(asset_type, symbol):
 
     return jsonify(data)
 
-init_db()
-ensure_admin_account()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=os.getenv("FLASK_DEBUG", "0") == "1")

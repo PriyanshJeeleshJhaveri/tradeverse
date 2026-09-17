@@ -30,15 +30,17 @@ CCME = Crypto Currency Market Exchange (currency: USD)
 
 import os
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 from tinymongo import TinyMongoClient
 
+from storage_paths import prepare_storage
+
 import price_service
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STORAGE_FOLDER = os.path.join(BASE_DIR, "tinydb_storage")
+_, STORAGE_FOLDER = prepare_storage()
 
-_client = TinyMongoClient(STORAGE_FOLDER)
+_client = TinyMongoClient(str(STORAGE_FOLDER))
 _db = _client.tradeverse
 portfolios = _db.portfolios
 
@@ -145,8 +147,7 @@ def get_market_snapshot(user_id, market):
     field = market + "_portfolio"
     holdings = doc.get(field, [])
 
-    refreshed = []
-    for h in holdings:
+    def _refresh_holding(h):
         live_price = price_service.get_price(h["name"])
         price = live_price if live_price is not None else h.get("price", h.get("bought_price", 0))
         quantity = h.get("quantity", 0)
@@ -155,7 +156,7 @@ def get_market_snapshot(user_id, market):
         profit_loss = round(price - bought_price, 2)
         profit_loss_percent = round((profit_loss / bought_price) * 100, 2) if bought_price else 0.0
 
-        refreshed.append({
+        return {
             "name": h["name"],
             "bought_date": h.get("bought_date"),
             "bought_price": bought_price,
@@ -164,7 +165,17 @@ def get_market_snapshot(user_id, market):
             "total_amount": round(price * quantity, 2),
             "profit_loss": profit_loss,
             "profit_loss_percent": profit_loss_percent,
-        })
+        }
+
+    # Fetch independent quotes concurrently. This matters on Vercel because
+    # a market page can contain several holdings and each external API call
+    # has network latency. Keeping them parallel avoids serial timeout buildup.
+    if holdings:
+        worker_count = min(6, len(holdings))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            refreshed = list(executor.map(_refresh_holding, holdings))
+    else:
+        refreshed = []
 
     if refreshed:
         # Persist only the fields that are actually stored (not the derived
