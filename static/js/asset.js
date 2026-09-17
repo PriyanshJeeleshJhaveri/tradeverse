@@ -1,16 +1,17 @@
 // TradeVerse asset detail page logic (single stock or crypto coin)
-// Draws a live price chart (Chart.js) for the selected time range, and
-// fills in current / low / high / change stats. Buy Now + Set Limit Order
-// are intentionally not wired up to anything yet.
+// Draws a live price chart (Chart.js) for the selected time range, fills in
+// price stats, and wires the supported immediate Buy action.
 
 const ASSET_SYMBOL = window.TRADEVERSE_ASSET_SYMBOL;
 const ASSET_TYPE = window.TRADEVERSE_ASSET_TYPE;
 
 let chartInstance = null;
+let currentPrice = null;
+const CURRENCY_SYMBOL = "$";
 
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";
-    return "$" + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 });
+    return CURRENCY_SYMBOL + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 });
 }
 
 function setStatValue(elId, text, changeValue) {
@@ -78,6 +79,7 @@ function loadChart(rangeKey) {
             statusEl.classList.add("hidden");
 
             const isUp = data.change_percent >= 0;
+            currentPrice = Number(data.current_price);
             renderChart(data.labels, data.prices, isUp);
 
             setStatValue("statCurrent", formatMoney(data.current_price));
@@ -93,6 +95,47 @@ function loadChart(rangeKey) {
         .catch(function () {
             statusEl.textContent = "Could not load chart data. Please try again.";
             statusEl.classList.remove("hidden");
+        });
+}
+
+
+function isIndianStock() {
+    return ASSET_TYPE === "stock" && (ASSET_SYMBOL.endsWith(".NS") || ASSET_SYMBOL.endsWith(".BO"));
+}
+
+function openBuyModal() {
+    if (isIndianStock()) {
+        alert("Trading for Indian stocks is not available yet.");
+        return;
+    }
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+        alert("Current price is not available. Please wait for the price to load and try again.");
+        return;
+    }
+
+    const market = ASSET_TYPE === "crypto" ? "CCME" : "USE";
+    fetch("/api/portfolio/" + market)
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+            TradeModal.open({
+                action: "buy",
+                assetType: ASSET_TYPE,
+                market: market,
+                symbol: ASSET_SYMBOL,
+                currentPrice: currentPrice,
+                currencySymbol: "$",
+                balance: Number(data.wallet),
+                onSuccess: function (result) {
+                    alert("Buy completed successfully. New wallet balance: $" + Number(result.wallet).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+                }
+            });
+        })
+        .catch(function () {
+            alert("Could not load your wallet balance. Please try again.");
         });
 }
 
@@ -120,4 +163,12 @@ document.addEventListener("DOMContentLoaded", function () {
     });
 
     loadChart("24H");
+
+    const buyButton = document.querySelector(".btn-buy");
+    if (buyButton) buyButton.addEventListener("click", openBuyModal);
+
+    const limitButton = document.querySelector(".btn-limit");
+    if (limitButton) limitButton.addEventListener("click", function () {
+        alert("Limit orders are not available yet. Use Buy Now for an immediate paper trade.");
+    });
 });

@@ -29,6 +29,8 @@ CCME = Crypto Currency Market Exchange (currency: USD)
 """
 
 import os
+import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
@@ -130,6 +132,196 @@ def ensure_admin_portfolio(user_id, username="admin"):
     portfolios.insert_one(doc)
 
 
+
+def _new_lot_id():
+    """Create a unique identifier for every purchase lot."""
+    return uuid.uuid4().hex
+
+
+def _normalise_quantity(value):
+    """Validate and normalise a positive quantity without allowing 0/negative values."""
+    try:
+        quantity = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Quantity must be a valid number.")
+    if not quantity.is_finite() or quantity <= 0:
+        raise ValueError("Quantity must be greater than 0.")
+    # Keep fractional crypto quantities while avoiding excessive precision.
+    quantity = quantity.quantize(Decimal("0.00000001"))
+    if quantity <= 0:
+        raise ValueError("Quantity must be greater than 0.")
+    return float(quantity)
+
+
+def _money(value):
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid price.")
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("Current price is unavailable.")
+    return float(amount)
+
+
+def _ensure_lot_ids(user_id, market, doc=None):
+    """Migrate old holdings in-place by assigning lot IDs without changing their quantities."""
+    if market not in MARKETS:
+        raise ValueError("Unknown market: " + market)
+    if doc is None:
+        doc = get_portfolio_doc(user_id)
+    if not doc:
+        return None
+
+    field = market + "_portfolio"
+    holdings = list(doc.get(field, []))
+    changed = False
+    migrated = []
+    for holding in holdings:
+        item = dict(holding)
+        if not item.get("lot_id"):
+            item["lot_id"] = _new_lot_id()
+            # Existing lots have a date but no timestamp. Keep the original date
+            # and use a migration timestamp only for uniqueness/audit purposes.
+            item.setdefault("bought_at", item.get("bought_date"))
+            changed = True
+        migrated.append(item)
+
+    if changed:
+        portfolios.update_one({"user_id": user_id}, {"$set": {field: migrated}})
+        doc[field] = migrated
+    return doc
+
+
+def buy_asset(user_id, market, symbol, quantity, current_price=None):
+    """Buy a new independent lot and deduct its cost from the market wallet."""
+    market = market.upper()
+    if market not in ("USE", "CCME"):
+        raise ValueError("Trading is not available for the Indian Stock Market yet.")
+
+    quantity = _normalise_quantity(quantity)
+    if market == "USE" and not quantity.is_integer():
+        raise ValueError("US stock quantity must be a whole number.")
+    symbol = symbol.strip().upper()
+    if not symbol:
+        raise ValueError("Asset symbol is required.")
+    if market == "USE" and (symbol.endswith(".NS") or symbol.endswith(".BO")):
+        raise ValueError("Trading Indian stocks is not available yet.")
+
+    # Always re-fetch/revalidate the price on the server. The browser's displayed
+    # price is only an estimate and must never be trusted for the actual debit.
+    live_price = price_service.get_price(symbol)
+    if live_price is None:
+        raise ValueError("Current market price is unavailable. Please try again.")
+    price = _money(live_price)
+    total = round(price * quantity, 2)
+
+    doc = get_portfolio_doc(user_id)
+    if not doc:
+        raise ValueError("Portfolio not found.")
+
+    wallet = dict(doc.get("wallet", {}))
+    balance = round(float(wallet.get(market, 0)), 2)
+    if total > balance + 1e-9:
+        raise ValueError(
+            f"Insufficient balance. Required {total:.2f}, available {balance:.2f}."
+        )
+
+    lot = {
+        "lot_id": _new_lot_id(),
+        "name": symbol,
+        "bought_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "bought_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "bought_price": price,
+        "price": price,
+        "quantity": quantity,
+        "total_amount": total,
+    }
+
+    field = market + "_portfolio"
+    holdings = list(doc.get(field, []))
+    holdings.append(lot)  # Never merge lots, even when symbol/price/time are identical.
+    wallet[market] = round(balance - total, 2)
+
+    portfolios.update_one(
+        {"user_id": user_id},
+        {"$set": {field: holdings, "wallet": wallet}},
+    )
+
+    return {
+        "market": market,
+        "lot": lot,
+        "wallet": wallet[market],
+        "total_amount": total,
+        "currency": CURRENCY_BY_MARKET[market],
+    }
+
+
+def sell_lot(user_id, market, lot_id, quantity, current_price=None):
+    """Sell part or all of one exact lot and credit proceeds to its market wallet."""
+    market = market.upper()
+    if market not in ("USE", "CCME"):
+        raise ValueError("Trading is not available for the Indian Stock Market yet.")
+
+    quantity_to_sell = _normalise_quantity(quantity)
+    if market == "USE" and not quantity_to_sell.is_integer():
+        raise ValueError("US stock quantity must be a whole number.")
+    lot_id = str(lot_id).strip()
+    if not lot_id:
+        raise ValueError("Lot ID is required.")
+
+    doc = _ensure_lot_ids(user_id, market)
+    if not doc:
+        raise ValueError("Portfolio not found.")
+
+    field = market + "_portfolio"
+    holdings = list(doc.get(field, []))
+    index = next((i for i, h in enumerate(holdings) if str(h.get("lot_id")) == lot_id), None)
+    if index is None:
+        raise ValueError("That holding lot no longer exists. Refresh the portfolio and try again.")
+
+    lot = dict(holdings[index])
+    available = _normalise_quantity(lot.get("quantity", 0))
+    if quantity_to_sell > available + 1e-9:
+        raise ValueError(f"You can sell at most {available:g} from this lot.")
+
+    symbol = str(lot.get("name", "")).upper()
+    live_price = price_service.get_price(symbol)
+    if live_price is None:
+        raise ValueError("Current market price is unavailable. Please try again.")
+    price = _money(live_price)
+    proceeds = round(price * quantity_to_sell, 2)
+
+    wallet = dict(doc.get("wallet", {}))
+    balance = round(float(wallet.get(market, 0)), 2)
+    new_quantity = round(available - quantity_to_sell, 8)
+
+    if new_quantity <= 0:
+        holdings.pop(index)
+    else:
+        lot["quantity"] = new_quantity
+        # Keep the lot's original bought price/date/id. Only the remaining
+        # quantity and current valuation are changed.
+        lot["price"] = price
+        lot["total_amount"] = round(price * new_quantity, 2)
+        holdings[index] = lot
+
+    wallet[market] = round(balance + proceeds, 2)
+    portfolios.update_one(
+        {"user_id": user_id},
+        {"$set": {field: holdings, "wallet": wallet}},
+    )
+
+    return {
+        "market": market,
+        "lot_id": lot_id,
+        "symbol": symbol,
+        "quantity_sold": quantity_to_sell,
+        "proceeds": proceeds,
+        "remaining_quantity": new_quantity,
+        "wallet": wallet[market],
+        "currency": CURRENCY_BY_MARKET[market],
+    }
+
 def get_market_snapshot(user_id, market):
     """
     Returns the wallet amount + holdings for one market (ISE/USE/CCME), with
@@ -144,6 +336,7 @@ def get_market_snapshot(user_id, market):
     if not doc:
         return {"wallet": 0, "currency": CURRENCY_BY_MARKET[market], "holdings": []}
 
+    doc = _ensure_lot_ids(user_id, market, doc)
     field = market + "_portfolio"
     holdings = doc.get(field, [])
 
@@ -157,8 +350,10 @@ def get_market_snapshot(user_id, market):
         profit_loss_percent = round((profit_loss / bought_price) * 100, 2) if bought_price else 0.0
 
         return {
+            "lot_id": h.get("lot_id"),
             "name": h["name"],
             "bought_date": h.get("bought_date"),
+            "bought_at": h.get("bought_at"),
             "bought_price": bought_price,
             "price": round(price, 2),
             "quantity": quantity,
@@ -181,7 +376,7 @@ def get_market_snapshot(user_id, market):
         # Persist only the fields that are actually stored (not the derived
         # profit/loss numbers, which are recomputed fresh on every read).
         stored = [
-            {k: r[k] for k in ("name", "bought_date", "bought_price", "price", "quantity", "total_amount")}
+            {k: r[k] for k in ("lot_id", "name", "bought_date", "bought_at", "bought_price", "price", "quantity", "total_amount")}
             for r in refreshed
         ]
         portfolios.update_one({"user_id": user_id}, {"$set": {field: stored}})

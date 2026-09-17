@@ -233,6 +233,75 @@ def api_portfolio(market):
     return jsonify(snapshot)
 
 
+
+def _json_error(message, status=400):
+    return jsonify({"error": message}), status
+
+
+def _trading_market_for_asset(asset_type, symbol):
+    """Map supported asset types to their wallet; Indian stocks remain disabled."""
+    asset_type = asset_type.lower()
+    symbol = symbol.upper()
+    if asset_type == "crypto":
+        return "CCME"
+    if asset_type == "stock":
+        if symbol.endswith(".NS") or symbol.endswith(".BO"):
+            return None
+        return "USE"
+    return None
+
+
+@app.route("/api/trade/buy", methods=["POST"])
+def api_buy():
+    if "user_id" not in session:
+        return _json_error("not logged in", 401)
+
+    data = request.get_json(silent=True) or {}
+    asset_type = str(data.get("asset_type", "")).lower().strip()
+    symbol = str(data.get("symbol", "")).upper().strip()
+    quantity = data.get("quantity")
+
+    market = _trading_market_for_asset(asset_type, symbol)
+    if market is None:
+        return _json_error("Trading is not available for the Indian Stock Market yet.")
+
+    try:
+        result = portfolio_db.buy_asset(
+            session["user_id"], market, symbol, quantity, data.get("current_price")
+        )
+        return jsonify({"success": True, **result})
+    except ValueError as exc:
+        return _json_error(str(exc))
+    except Exception:
+        app.logger.exception("Buy transaction failed")
+        return _json_error("The trade could not be completed. Please try again.", 500)
+
+
+@app.route("/api/trade/sell", methods=["POST"])
+def api_sell():
+    if "user_id" not in session:
+        return _json_error("not logged in", 401)
+
+    data = request.get_json(silent=True) or {}
+    market = str(data.get("market", "")).upper().strip()
+    lot_id = str(data.get("lot_id", "")).strip()
+    quantity = data.get("quantity")
+
+    if market not in ("USE", "CCME"):
+        return _json_error("Trading is not available for the Indian Stock Market yet.")
+
+    try:
+        result = portfolio_db.sell_lot(
+            session["user_id"], market, lot_id, quantity, data.get("current_price")
+        )
+        return jsonify({"success": True, **result})
+    except ValueError as exc:
+        return _json_error(str(exc))
+    except Exception:
+        app.logger.exception("Sell transaction failed")
+        return _json_error("The trade could not be completed. Please try again.", 500)
+
+
 @app.route("/api/btc")
 def api_btc():
     if "user_id" not in session:

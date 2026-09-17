@@ -47,11 +47,43 @@ function renderHoldingRow(h) {
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + formatMoney(h.profit_loss) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + h.profit_loss_percent.toFixed(2) + "%</td>" +
             "<td class=\"actions-cell\">" +
-                "<button type=\"button\" class=\"btn-sell-now\" data-symbol=\"" + h.name + "\">Sell Now</button>" +
-                "<button type=\"button\" class=\"btn-sell-limit\" data-symbol=\"" + h.name + "\">Sell Limit</button>" +
+                (MARKET === "ISE" ? "<span class=\"trade-disabled\">Trading unavailable</span>" :
+                    "<button type=\"button\" class=\"btn-sell-now\" data-action=\"sell\" data-symbol=\"" + h.name + "\" data-lot-id=\"" + (h.lot_id || "") + "\" data-price=\"" + h.price + "\" data-quantity=\"" + h.quantity + "\">Sell Now</button>" +
+                    "<button type=\"button\" class=\"btn-sell-limit\" data-action=\"sell-limit\" data-symbol=\"" + h.name + "\">Sell Limit</button>") +
             "</td>" +
         "</tr>"
     );
+}
+
+
+function bindTradeButtons(data) {
+    document.querySelectorAll("[data-action='sell']").forEach(function (button) {
+        button.addEventListener("click", function () {
+            const maxQuantity = Number(button.dataset.quantity);
+            const price = Number(button.dataset.price);
+            if (!button.dataset.lotId) {
+                loadPortfolio();
+                return;
+            }
+            TradeModal.open({
+                action: "sell",
+                market: MARKET,
+                assetType: MARKET === "CCME" ? "crypto" : "stock",
+                symbol: button.dataset.symbol,
+                lotId: button.dataset.lotId,
+                maxQuantity: maxQuantity,
+                currentPrice: price,
+                currencySymbol: CURRENCY_SYMBOL,
+                onSuccess: function () { loadPortfolio(); }
+            });
+        });
+    });
+
+    document.querySelectorAll("[data-action='sell-limit']").forEach(function (button) {
+        button.addEventListener("click", function () {
+            alert("Limit orders are not available yet. Use Sell Now for an immediate paper trade.");
+        });
+    });
 }
 
 function loadPortfolio() {
@@ -73,7 +105,7 @@ function loadPortfolio() {
             }
 
             document.getElementById("portfolioBody").innerHTML = data.holdings.map(renderHoldingRow).join("");
-            // Sell / Sell Limit buttons are visual only for now - no sell pipeline exists yet.
+            bindTradeButtons(data);
         })
         .catch(() => {
             setLoadingRow("Could not load portfolio. Please try again.");
