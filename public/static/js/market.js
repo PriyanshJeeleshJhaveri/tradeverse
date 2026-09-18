@@ -4,6 +4,8 @@ const REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes, matches backend price
 const MARKET = window.TRADEVERSE_MARKET;
 const CURRENCY_SYMBOL = window.TRADEVERSE_CURRENCY_SYMBOL;
 const COLUMN_COUNT = 9;
+const IS_CRYPTO_MARKET = MARKET === "CCME";
+const SELLING_SUPPORTED = MARKET !== "ISE"; // Indian stock market trading isn't available yet
 
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";
@@ -36,6 +38,15 @@ function renderHoldingRow(h) {
     const plSign = plUp ? "+" : "";
     const plClass = plUp ? "up" : "down";
 
+    const sellNowBtn = SELLING_SUPPORTED
+        ? "<button type=\"button\" class=\"btn-sell-now\" data-lot-id=\"" + h.id + "\" data-symbol=\"" + h.name +
+          "\" data-price=\"" + h.price + "\" data-available=\"" + h.quantity + "\">Sell Now</button>"
+        : "<button type=\"button\" class=\"btn-sell-now\" disabled title=\"Indian stock market trading isn't available yet.\">Sell Now</button>";
+
+    const sellLimitBtn = "<button type=\"button\" class=\"btn-sell-limit\"" +
+        (SELLING_SUPPORTED ? " title=\"Coming soon\"" : " disabled title=\"Indian stock market trading isn't available yet.\"") +
+        ">Sell Limit</button>";
+
     return (
         "<tr>" +
             "<td>" + h.name + "</td>" +
@@ -46,44 +57,9 @@ function renderHoldingRow(h) {
             "<td class=\"num\">" + formatMoney(h.total_amount) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + formatMoney(h.profit_loss) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + h.profit_loss_percent.toFixed(2) + "%</td>" +
-            "<td class=\"actions-cell\">" +
-                (MARKET === "ISE" ? "<span class=\"trade-disabled\">Trading unavailable</span>" :
-                    "<button type=\"button\" class=\"btn-sell-now\" data-action=\"sell\" data-symbol=\"" + h.name + "\" data-lot-id=\"" + (h.lot_id || "") + "\" data-price=\"" + h.price + "\" data-quantity=\"" + h.quantity + "\">Sell Now</button>" +
-                    "<button type=\"button\" class=\"btn-sell-limit\" data-action=\"sell-limit\" data-symbol=\"" + h.name + "\">Sell Limit</button>") +
-            "</td>" +
+            "<td class=\"actions-cell\">" + sellNowBtn + sellLimitBtn + "</td>" +
         "</tr>"
     );
-}
-
-
-function bindTradeButtons(data) {
-    document.querySelectorAll("[data-action='sell']").forEach(function (button) {
-        button.addEventListener("click", function () {
-            const maxQuantity = Number(button.dataset.quantity);
-            const price = Number(button.dataset.price);
-            if (!button.dataset.lotId) {
-                loadPortfolio();
-                return;
-            }
-            TradeModal.open({
-                action: "sell",
-                market: MARKET,
-                assetType: MARKET === "CCME" ? "crypto" : "stock",
-                symbol: button.dataset.symbol,
-                lotId: button.dataset.lotId,
-                maxQuantity: maxQuantity,
-                currentPrice: price,
-                currencySymbol: CURRENCY_SYMBOL,
-                onSuccess: function () { loadPortfolio(); }
-            });
-        });
-    });
-
-    document.querySelectorAll("[data-action='sell-limit']").forEach(function (button) {
-        button.addEventListener("click", function () {
-            alert("Limit orders are not available yet. Use Sell Now for an immediate paper trade.");
-        });
-    });
 }
 
 function loadPortfolio() {
@@ -105,10 +81,139 @@ function loadPortfolio() {
             }
 
             document.getElementById("portfolioBody").innerHTML = data.holdings.map(renderHoldingRow).join("");
-            bindTradeButtons(data);
+
+            document.querySelectorAll(".btn-sell-now:not([disabled])").forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    openSellModal({
+                        lotId: btn.getAttribute("data-lot-id"),
+                        symbol: btn.getAttribute("data-symbol"),
+                        price: parseFloat(btn.getAttribute("data-price")),
+                        available: parseFloat(btn.getAttribute("data-available")),
+                    });
+                });
+            });
         })
         .catch(() => {
             setLoadingRow("Could not load portfolio. Please try again.");
+        });
+}
+
+
+// ---------------------------------------------------------------------------
+// Sell Now modal - a market order at the current live price, capped at the
+// quantity remaining in that specific lot.
+// ---------------------------------------------------------------------------
+
+let activeLot = null;
+
+function openSellModal(lot) {
+    activeLot = lot;
+
+    const qtyInput = document.getElementById("tradeQuantityInput");
+    qtyInput.value = "1";
+    qtyInput.step = IS_CRYPTO_MARKET ? "any" : "1";
+    qtyInput.max = lot.available;
+
+    document.getElementById("tradeModalSymbol").textContent = lot.symbol;
+    document.getElementById("tradeModalAvailable").textContent = "(you own " + formatQuantity(lot.available) + ")";
+    document.getElementById("tradeModalError").classList.add("hidden");
+    document.getElementById("tradeModalSuccess").classList.add("hidden");
+    document.getElementById("tradeModalConfirm").disabled = false;
+    document.getElementById("tradeModalConfirm").textContent = "Confirm Sell";
+
+    updateSellModalTotal();
+    document.getElementById("tradeModalOverlay").classList.remove("hidden");
+}
+
+function closeSellModal() {
+    document.getElementById("tradeModalOverlay").classList.add("hidden");
+    activeLot = null;
+}
+
+function readQuantity() {
+    const raw = document.getElementById("tradeQuantityInput").value;
+    return raw === "" ? NaN : parseFloat(raw);
+}
+
+function validateQuantity(quantity) {
+    if (!activeLot) return "No holding selected.";
+    if (isNaN(quantity) || quantity <= 0) {
+        return "Quantity must be greater than zero.";
+    }
+    if (!IS_CRYPTO_MARKET && quantity !== Math.floor(quantity)) {
+        return "Stock quantity must be a whole number of shares.";
+    }
+    if (quantity > activeLot.available + 1e-9) {
+        return "You can only sell up to " + formatQuantity(activeLot.available) + " from this lot.";
+    }
+    return null;
+}
+
+function updateSellModalTotal() {
+    const quantity = readQuantity();
+    const errorEl = document.getElementById("tradeModalError");
+    const confirmBtn = document.getElementById("tradeModalConfirm");
+    const totalEl = document.getElementById("tradeModalTotal");
+
+    const validationError = validateQuantity(quantity);
+    if (validationError) {
+        totalEl.textContent = "--";
+        errorEl.textContent = validationError;
+        errorEl.classList.remove("hidden");
+        confirmBtn.disabled = true;
+        return;
+    }
+
+    errorEl.classList.add("hidden");
+    confirmBtn.disabled = false;
+    totalEl.textContent = formatMoney(activeLot.price * quantity);
+}
+
+function submitSell() {
+    const quantity = readQuantity();
+    const validationError = validateQuantity(quantity);
+    if (validationError) {
+        updateSellModalTotal();
+        return;
+    }
+
+    const confirmBtn = document.getElementById("tradeModalConfirm");
+    const errorEl = document.getElementById("tradeModalError");
+    const successEl = document.getElementById("tradeModalSuccess");
+
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Placing order...";
+    errorEl.classList.add("hidden");
+
+    fetch("/api/trade/sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ market: MARKET, lot_id: activeLot.lotId, quantity: quantity }),
+    })
+        .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+        .then(function (result) {
+            if (!result.ok || result.body.error) {
+                errorEl.textContent = result.body.error || "Something went wrong. Please try again.";
+                errorEl.classList.remove("hidden");
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = "Confirm Sell";
+                return;
+            }
+
+            successEl.textContent = "Sold " + quantity + " " + activeLot.symbol + " successfully!";
+            successEl.classList.remove("hidden");
+            confirmBtn.textContent = "Done";
+
+            setTimeout(function () {
+                closeSellModal();
+                loadPortfolio();
+            }, 900);
+        })
+        .catch(function () {
+            errorEl.textContent = "Could not reach the server. Please try again.";
+            errorEl.classList.remove("hidden");
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Confirm Sell";
         });
 }
 
@@ -126,6 +231,18 @@ document.addEventListener("DOMContentLoaded", function () {
         if (!dropdownMenu.contains(e.target) && e.target !== menuBtn) {
             dropdownMenu.classList.add("hidden");
         }
+    });
+
+    document.getElementById("tradeQuantityInput").addEventListener("input", updateSellModalTotal);
+    document.getElementById("tradeModalConfirm").addEventListener("click", submitSell);
+    document.getElementById("tradeModalCancel").addEventListener("click", closeSellModal);
+
+    document.getElementById("tradeModalOverlay").addEventListener("click", function (e) {
+        if (e.target === this) closeSellModal();
+    });
+
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeSellModal();
     });
 
     loadPortfolio();

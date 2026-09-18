@@ -1,6 +1,10 @@
 .env
+.env.*
+!.env.example
 .venv/
+venv/
 __pycache__/
-*.pyc
-*.zip
+*.py[cod]
+*.db
 .git/
+tests/

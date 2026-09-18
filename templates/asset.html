@@ -4,17 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ display_name }} - TradeVerse</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
 </head>
 <body>
 
     <div class="topbar">
         <div class="topbar-inner topbar-dashboard">
             <div class="logo-wrap">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+                <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
             </div>
             <div class="topbar-user">
-                Hi, <strong>{{ username }}</strong> &middot; <a href="{{ url_for('logout') }}">Log Out</a>
+                Hi, <strong>{{ username }}</strong>{% if is_admin %} &middot; <a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %} &middot; <a href="{{ url_for('logout') }}">Log Out</a>
             </div>
         </div>
     </div>
@@ -90,22 +90,41 @@
             </div>
         </div>
 
-        <!-- Action buttons - visual only for now, not wired up to anything -->
+        <!-- Action buttons -->
         <div class="action-row">
-            <button type="button" class="btn-buy">Buy Now</button>
-            <button type="button" class="btn-limit">Set Limit Order</button>
+            <button type="button" id="buyNowBtn" class="btn-buy">Buy Now</button>
+            <button type="button" class="btn-limit" title="Coming soon">Set Limit Order</button>
         </div>
+        <p id="assetTradeNote" class="trade-note hidden"></p>
 
         <p class="refresh-note">Stock data from Twelve Data &middot; crypto data from CoinGecko.</p>
     </div>
 
+    <!-- Buy modal -->
+    <div id="tradeModalOverlay" class="modal-overlay hidden">
+        <div class="modal-box">
+            <h3 class="modal-title">Buy <span id="tradeModalSymbol">{{ symbol }}</span></h3>
+
+            <label class="modal-label" for="tradeQuantityInput">Quantity</label>
+            <input type="number" id="tradeQuantityInput" class="modal-input" value="1" min="0" step="1">
+
+            <div class="modal-total">Estimated Total: <span id="tradeModalTotal">--</span></div>
+            <div id="tradeModalError" class="modal-error hidden"></div>
+            <div id="tradeModalSuccess" class="modal-success hidden"></div>
+
+            <div class="modal-actions">
+                <button type="button" id="tradeModalCancel" class="modal-btn-cancel">Cancel</button>
+                <button type="button" id="tradeModalConfirm" class="modal-btn-confirm">Confirm Buy</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/trade_modal.js') }}"></script>
+    <script src="{{ url_for('local_static', filename='js/script.js') }}"></script>
     <script>
         window.TRADEVERSE_ASSET_SYMBOL = "{{ symbol }}";
         window.TRADEVERSE_ASSET_TYPE = "{{ asset_type }}";
     </script>
-    <script src="{{ url_for('static', filename='js/asset.js') }}"></script>
+    <script src="{{ url_for('local_static', filename='js/asset.js') }}"></script>
 </body>
 </html>

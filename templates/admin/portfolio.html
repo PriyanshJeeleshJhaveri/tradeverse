@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Portfolio - TradeVerse</title>
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-inner topbar-dashboard">
+        <div class="logo-wrap">
+            <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+        </div>
+        <div class="topbar-user">
+            <a href="{{ url_for('admin_dashboard') }}">Admin Dashboard</a> &middot;
+            <a href="{{ url_for('logout') }}">Log Out</a>
+        </div>
+    </div>
+</div>
+
+<div class="admin-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="admin-header-row">
+        <div>
+            <p class="admin-eyebrow">DEFAULT PORTFOLIO</p>
+            <h1>Admin Portfolio</h1>
+            <p class="admin-subtitle">This portfolio is created automatically when the bootstrap ADMIN account is created.</p>
+        </div>
+        <a class="btn btn-outline" href="{{ url_for('admin_dashboard') }}">Back to Admin</a>
+    </div>
+
+    <div class="admin-card">
+        <form method="POST" action="{{ url_for('admin_portfolio') }}">
+            <div class="form-group">
+                <label for="portfolio_name">Portfolio Name</label>
+                <input type="text" id="portfolio_name" name="portfolio_name" value="{{ portfolio.portfolio_name }}" maxlength="80" required>
+            </div>
+            <div class="form-group">
+                <label for="description">Description</label>
+                <textarea id="description" name="description" rows="4" maxlength="500">{{ portfolio.description }}</textarea>
+            </div>
+            <button class="btn btn-navy" type="submit">Save Portfolio Details</button>
+        </form>
+    </div>
+
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <h2>Starting Wallets</h2>
+                <p>These balances are initialized by the application for the simulation.</p>
+            </div>
+        </div>
+        <div class="wallet-grid">
+            <div class="wallet-card"><span>Indian Stock</span><strong>₹ {{ '%.2f'|format(portfolio.wallet.ISE) }}</strong></div>
+            <div class="wallet-card"><span>US Stock</span><strong>$ {{ '%.2f'|format(portfolio.wallet.USE) }}</strong></div>
+            <div class="wallet-card"><span>Crypto</span><strong>$ {{ '%.2f'|format(portfolio.wallet.CCME) }}</strong></div>
+        </div>
+    </div>
+
+    {% for key, title, currency in [('ISE', 'Indian Stock Market', '₹'), ('USE', 'US Stock Exchange', '$'), ('CCME', 'Crypto Currency Market Exchange', '$')] %}
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <h2>{{ title }}</h2>
+                <p>Default positions included for the administrator.</p>
+            </div>
+        </div>
+        {% set holdings = portfolio[key ~ '_portfolio'] %}
+        {% if holdings %}
+        <div class="admin-table-wrap">
+            <table class="admin-table">
+                <thead>
+                    <tr><th>Symbol</th><th>Bought Date</th><th>Bought Price</th><th>Quantity</th><th>Total</th></tr>
+                </thead>
+                <tbody>
+                {% for h in holdings %}
+                    <tr>
+                        <td><strong>{{ h.name }}</strong></td>
+                        <td>{{ h.bought_date }}</td>
+                        <td>{{ currency }} {{ '%.2f'|format(h.bought_price) }}</td>
+                        <td>{{ h.quantity }}</td>
+                        <td>{{ currency }} {{ '%.2f'|format(h.total_amount) }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+            <p class="admin-empty">No positions in this market.</p>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+</body>
+</html>

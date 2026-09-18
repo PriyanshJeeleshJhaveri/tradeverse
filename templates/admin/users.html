@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Users - TradeVerse</title>
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-inner topbar-dashboard">
+        <div class="logo-wrap">
+            <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+        </div>
+        <div class="topbar-user"><a href="{{ url_for('admin_dashboard') }}">Admin Dashboard</a> &middot; <a href="{{ url_for('logout') }}">Log Out</a></div>
+    </div>
+</div>
+<div class="admin-wrap">
+    <div class="admin-header-row">
+        <div>
+            <p class="admin-eyebrow">ACCOUNT DIRECTORY</p>
+            <h1>Users</h1>
+            <p class="admin-subtitle">Read-only account list for the initial admin implementation.</p>
+        </div>
+        <a class="btn btn-outline" href="{{ url_for('admin_dashboard') }}">Back to Admin</a>
+    </div>
+    <div class="admin-card">
+        <div class="admin-table-wrap">
+            <table class="admin-table">
+                <thead><tr><th>Username</th><th>Email</th><th>Phone</th><th>Role</th><th>Created</th></tr></thead>
+                <tbody>
+                {% for user in users %}
+                    <tr>
+                        <td><strong>{{ user.username }}</strong></td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.phone }}</td>
+                        <td><span class="role-badge {{ user.role|lower }}">{{ user.role }}</span></td>
+                        <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M') if user.created_at else '' }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="5" class="admin-empty">No accounts yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>

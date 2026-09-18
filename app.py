@@ -1,38 +1,37 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
-from concurrent.futures import ThreadPoolExecutor
-import sqlite3
+from __future__ import annotations
+
 import os
-from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+from pathlib import Path
+
 from dotenv import load_dotenv
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for, send_from_directory
+from werkzeug.security import check_password_hash
 
 load_dotenv()
 
-from storage_paths import IS_VERCEL, prepare_storage
-
+import auth_db
+import mongo_db
 import portfolio_db
 import price_service
 
-app = Flask(__name__, static_folder="public/static", static_url_path="/static")
+BASE_DIR = Path(__file__).resolve().parent
+PUBLIC_STATIC_DIR = BASE_DIR / "public" / "static"
 
-# Vercel provides HTTPS in production. Keep the cookie settings explicit so
-# login sessions work correctly when Flask runs as a serverless function.
-FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "")
-if IS_VERCEL and not FLASK_SECRET_KEY:
-    raise RuntimeError("FLASK_SECRET_KEY must be configured in Vercel Environment Variables.")
-app.secret_key = FLASK_SECRET_KEY or "dev-only-tradeverse-secret"
+FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "").strip()
+if not FLASK_SECRET_KEY:
+    if os.getenv("VERCEL"):
+        raise RuntimeError("FLASK_SECRET_KEY is required in Vercel Environment Variables.")
+    FLASK_SECRET_KEY = "tradeverse-local-development-secret-change-me"
+
+app = Flask(__name__, static_folder=None)
+app.secret_key = FLASK_SECRET_KEY
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=IS_VERCEL,
-    SESSION_COOKIE_NAME="tradeverse_session",
+    SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL")),
+    MAX_CONTENT_LENGTH=2 * 1024 * 1024,
 )
-
-DB_PATH, _TINYDB_RUNTIME_PATH = prepare_storage()
-
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin@123"
-ADMIN_EMAIL = "admin@gmail.com"
-ADMIN_PHONE = "1234567890"
 
 MARKET_FULL_NAMES = {
     "ISE": "Indian Stock Market",
@@ -41,68 +40,84 @@ MARKET_FULL_NAMES = {
 }
 
 MARKET_CURRENCY_SYMBOL = {
-    "ISE": "\u20B9",   # INR
+    "ISE": "₹",
     "USE": "$",
     "CCME": "$",
 }
 
 
-# Initialize the file-backed stores when the module is imported. Vercel imports
-# the Flask module instead of executing the __main__ block.
-init_db_ready = False
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def is_database_configured() -> bool:
+    return bool(os.getenv("MONGODB_URI", "").strip())
 
 
-def init_db():
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            phone TEXT NOT NULL,
-            password TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+def current_user():
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return auth_db.get_user_by_id(user_id)
 
 
-def ensure_admin_account():
-    """Creates the default admin login (SQLite) + its demo portfolio (tinymongo), if missing."""
-    conn = get_db_connection()
-    admin = conn.execute(
-        "SELECT * FROM users WHERE username = ?", (ADMIN_USERNAME,)
-    ).fetchone()
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user_id"):
+            flash("Please log in to continue.", "error")
+            return redirect(url_for("login"))
+        return view(*args, **kwargs)
 
-    if admin is None:
-        hashed_password = generate_password_hash(ADMIN_PASSWORD)
-        conn.execute(
-            "INSERT INTO users (username, email, phone, password) VALUES (?, ?, ?, ?)",
-            (ADMIN_USERNAME, ADMIN_EMAIL, ADMIN_PHONE, hashed_password),
-        )
-        conn.commit()
-        admin = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (ADMIN_USERNAME,)
-        ).fetchone()
-
-    conn.close()
-    portfolio_db.ensure_admin_portfolio(admin["id"], admin["username"])
+    return wrapped
 
 
-# Run initialization at import time for Vercel and other WSGI/serverless hosts.
-init_db()
-if os.getenv("TRADEVERSE_BOOTSTRAP_ADMIN", "0") == "1":
-    ensure_admin_account()
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            session.clear()
+            flash("Please log in to continue.", "error")
+            return redirect(url_for("login"))
+        if user.get("role") != "ADMIN":
+            flash("You do not have permission to access the admin area.", "error")
+            return redirect(url_for("dashboard"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+@app.context_processor
+def inject_user():
+    user = current_user() if session.get("user_id") else None
+    return {
+        "current_user": user,
+        "is_admin": bool(user and user.get("role") == "ADMIN"),
+    }
+
+
+@app.get("/static/<path:filename>")
+def local_static(filename):
+    """Serve public/static locally; Vercel serves the same directory as CDN assets."""
+    return send_from_directory(PUBLIC_STATIC_DIR, filename)
+
+
+@app.route("/health")
+def health():
+    """Deployment health check without exposing database credentials."""
+    if not is_database_configured():
+        return jsonify({"status": "error", "database": "not_configured"}), 503
+    try:
+        mongo_db.ping()
+        return jsonify({"status": "ok", "database": "ok"})
+    except Exception as exc:
+        print(f"[health] {exc}")
+        return jsonify({"status": "error", "database": "unavailable"}), 503
 
 
 @app.route("/")
 def home():
-    if "username" in session:
+    user = current_user()
+    if user:
+        if user.get("role") == "ADMIN":
+            return redirect(url_for("admin_dashboard"))
         return redirect(url_for("dashboard"))
     return redirect(url_for("login"))
 
@@ -115,36 +130,29 @@ def register():
         phone = request.form.get("phone", "").strip()
         password = request.form.get("password", "")
 
-        if not username or not email or not phone or not password:
+        if not all([username, email, phone, password]):
             flash("Please fill in all fields.", "error")
             return render_template("register.html")
 
-        if len(password) < 6:
-            flash("Password must be at least 6 characters long.", "error")
+        if len(password) < 8:
+            flash("Password must be at least 8 characters long.", "error")
             return render_template("register.html")
 
-        hashed_password = generate_password_hash(password)
-
-        conn = get_db_connection()
         try:
-            cur = conn.execute(
-                "INSERT INTO users (username, email, phone, password) VALUES (?, ?, ?, ?)",
-                (username, email, phone, hashed_password),
-            )
-            conn.commit()
-            new_user_id = cur.lastrowid
-            conn.close()
-
-            # Every new user starts with empty portfolios + the default wallet amounts:
-            # ISE: 10,00,000 INR | USE: 10,000 USD | CCME: 10,000 USD
-            portfolio_db.create_default_portfolio(new_user_id, username)
-
-            flash("Account created successfully! Please log in.", "success")
-            return redirect(url_for("login"))
-        except sqlite3.IntegrityError:
-            conn.close()
-            flash("Username or email already exists.", "error")
+            if not is_database_configured():
+                raise RuntimeError("MongoDB Atlas is not configured yet.")
+            user = auth_db.create_user(username, email, phone, password, role="USER")
+            portfolio_db.create_default_portfolio(user["id"], user["username"], role="USER")
+        except ValueError as exc:
+            flash(str(exc), "error")
             return render_template("register.html")
+        except Exception as exc:
+            print(f"[register] {exc}")
+            flash("The account could not be created right now. Check the database configuration and try again.", "error")
+            return render_template("register.html")
+
+        flash("Account created successfully! You can now log in.", "success")
+        return redirect(url_for("login"))
 
     return render_template("register.html")
 
@@ -155,20 +163,27 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
-        conn = get_db_connection()
-        user = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
-        conn.close()
-
-        if user and check_password_hash(user["password"], password):
-            session["username"] = user["username"]
-            session["user_id"] = user["id"]
-            flash("Welcome back, " + user["username"] + "!", "success")
-            return redirect(url_for("dashboard"))
-        else:
-            flash("Invalid username or password.", "error")
+        try:
+            if not is_database_configured():
+                raise RuntimeError("MongoDB Atlas is not configured yet.")
+            user = auth_db.verify_credentials(username, password)
+        except Exception as exc:
+            print(f"[login] {exc}")
+            flash("Database connection is not ready yet. Please check the MongoDB/Vercel configuration.", "error")
             return render_template("login.html")
+
+        if user:
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["role"] = user.get("role", "USER")
+            flash("Welcome back, " + user["username"] + "!", "success")
+            if user.get("role") == "ADMIN":
+                return redirect(url_for("admin_dashboard"))
+            return redirect(url_for("dashboard"))
+
+        flash("Invalid username or password.", "error")
+        return render_template("login.html")
 
     return render_template("login.html")
 
@@ -176,31 +191,30 @@ def login():
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
-        flash("If this account exists, password reset instructions have been noted. (Demo feature)", "success")
+        flash("Password reset email delivery is not configured yet. Please contact the administrator.", "error")
         return redirect(url_for("login"))
     return render_template("forgot_password.html")
 
 
 @app.route("/dashboard")
+@login_required
 def dashboard():
-    if "user_id" not in session:
-        return redirect(url_for("login"))
-    return render_template("dashboard.html", username=session["username"])
+    user = current_user()
+    return render_template("dashboard.html", username=user["username"])
 
 
 @app.route("/market/<market>")
+@login_required
 def market_page(market):
-    if "user_id" not in session:
-        return redirect(url_for("login"))
-
     market = market.upper()
     if market not in portfolio_db.MARKETS:
         flash("Unknown market.", "error")
         return redirect(url_for("dashboard"))
 
+    user = current_user()
     return render_template(
         "market.html",
-        username=session["username"],
+        username=user["username"],
         market=market,
         market_name=MARKET_FULL_NAMES[market],
         currency_symbol=MARKET_CURRENCY_SYMBOL[market],
@@ -209,10 +223,60 @@ def market_page(market):
 
 @app.route("/logout")
 def logout():
-    session.pop("username", None)
-    session.pop("user_id", None)
+    session.clear()
     flash("You have been logged out.", "success")
     return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard and portfolio management
+# ---------------------------------------------------------------------------
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+    user = current_user()
+    portfolio = portfolio_db.get_portfolio_doc(user["id"])
+    if portfolio is None:
+        portfolio = portfolio_db.ensure_admin_portfolio(user["id"], user["username"])
+
+    holdings_count = sum(len(portfolio.get(market + "_portfolio", [])) for market in portfolio_db.MARKETS)
+    return render_template(
+        "admin/dashboard.html",
+        admin=user,
+        portfolio=portfolio,
+        holdings_count=holdings_count,
+        user_count=auth_db.count_users(),
+    )
+
+
+@app.route("/admin/portfolio", methods=["GET", "POST"])
+@admin_required
+def admin_portfolio():
+    user = current_user()
+    portfolio = portfolio_db.get_portfolio_doc(user["id"])
+    if portfolio is None:
+        portfolio = portfolio_db.ensure_admin_portfolio(user["id"], user["username"])
+
+    if request.method == "POST":
+        try:
+            portfolio_db.update_portfolio_metadata(
+                user["id"],
+                request.form.get("portfolio_name", ""),
+                request.form.get("description", ""),
+            )
+            flash("Admin portfolio details saved.", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("admin_portfolio"))
+
+    return render_template("admin/portfolio.html", admin=user, portfolio=portfolio)
+
+
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+    return render_template("admin/users.html", users=auth_db.list_users())
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +284,8 @@ def logout():
 # ---------------------------------------------------------------------------
 
 @app.route("/api/portfolio/<market>")
+@login_required
 def api_portfolio(market):
-    if "user_id" not in session:
-        return jsonify({"error": "not logged in"}), 401
-
     market = market.upper()
     if market not in portfolio_db.MARKETS:
         return jsonify({"error": "invalid market"}), 400
@@ -233,139 +295,53 @@ def api_portfolio(market):
     return jsonify(snapshot)
 
 
-
-def _json_error(message, status=400):
-    return jsonify({"error": message}), status
-
-
-def _trading_market_for_asset(asset_type, symbol):
-    """Map supported asset types to their wallet; Indian stocks remain disabled."""
-    asset_type = asset_type.lower()
-    symbol = symbol.upper()
-    if asset_type == "crypto":
-        return "CCME"
-    if asset_type == "stock":
-        if symbol.endswith(".NS") or symbol.endswith(".BO"):
-            return None
-        return "USE"
-    return None
-
-
-@app.route("/api/trade/buy", methods=["POST"])
-def api_buy():
-    if "user_id" not in session:
-        return _json_error("not logged in", 401)
-
-    data = request.get_json(silent=True) or {}
-    asset_type = str(data.get("asset_type", "")).lower().strip()
-    symbol = str(data.get("symbol", "")).upper().strip()
-    quantity = data.get("quantity")
-
-    market = _trading_market_for_asset(asset_type, symbol)
-    if market is None:
-        return _json_error("Trading is not available for the Indian Stock Market yet.")
-
-    try:
-        result = portfolio_db.buy_asset(
-            session["user_id"], market, symbol, quantity, data.get("current_price")
-        )
-        return jsonify({"success": True, **result})
-    except ValueError as exc:
-        return _json_error(str(exc))
-    except Exception:
-        app.logger.exception("Buy transaction failed")
-        return _json_error("The trade could not be completed. Please try again.", 500)
-
-
-@app.route("/api/trade/sell", methods=["POST"])
-def api_sell():
-    if "user_id" not in session:
-        return _json_error("not logged in", 401)
-
-    data = request.get_json(silent=True) or {}
-    market = str(data.get("market", "")).upper().strip()
-    lot_id = str(data.get("lot_id", "")).strip()
-    quantity = data.get("quantity")
-
-    if market not in ("USE", "CCME"):
-        return _json_error("Trading is not available for the Indian Stock Market yet.")
-
-    try:
-        result = portfolio_db.sell_lot(
-            session["user_id"], market, lot_id, quantity, data.get("current_price")
-        )
-        return jsonify({"success": True, **result})
-    except ValueError as exc:
-        return _json_error(str(exc))
-    except Exception:
-        app.logger.exception("Sell transaction failed")
-        return _json_error("The trade could not be completed. Please try again.", 500)
-
-
 @app.route("/api/btc")
+@login_required
 def api_btc():
-    if "user_id" not in session:
-        return jsonify({"error": "not logged in"}), 401
-
     quote = price_service.get_quote("BTC-USD")
     if quote is None:
         return jsonify({"price": None, "change": None, "change_percent": None})
-
     return jsonify(quote)
 
 
 @app.route("/api/indices")
+@login_required
 def api_indices():
-    if "user_id" not in session:
-        return jsonify({"error": "not logged in"}), 401
+    return jsonify([
+        {"symbol": "SPX", "name": "S&P 500", "price": 6250.00, "change": 28.13, "change_percent": 0.45},
+        {"symbol": "NIFTY", "name": "NIFTY 50", "price": 25000.00, "change": 95.00, "change_percent": 0.38},
+        {"symbol": "SENSEX", "name": "SENSEX", "price": 82000.00, "change": 336.20, "change_percent": 0.41},
+    ])
 
-    labels = ("S&P 500", "NIFTY 50", "SENSEX")
-
-    def _get_index(label):
-        return jsonify([
-            { "symbol": "SPX", "name": "S&P 500", "price": 6250.00, "change": 28.13, "change_percent": 0.45 },
-            { "symbol": "NIFTY", "name": "NIFTY 50", "price": 25000.00, "change": 95.00, "change_percent": 0.38 },
-            { "symbol": "SENSEX", "name": "SENSEX", "price": 82000.00, "change": 336.20, "change_percent": 0.41 }
-        ])
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        results = list(executor.map(_get_index, labels))
-    return jsonify(results)
 
 @app.route("/api/search")
+@login_required
 def api_search():
-    """Live search-as-you-type used by the dashboard search bar."""
-    if "user_id" not in session:
-        return jsonify({"error": "not logged in"}), 401
-
     query = request.args.get("q", "").strip()
     if len(query) < 1:
         return jsonify([])
-
-    results = price_service.search_symbols(query)
-    return jsonify(results)
+    return jsonify(price_service.search_symbols(query))
 
 
 # ---------------------------------------------------------------------------
-# Asset detail page (price chart + stats for one stock or crypto coin)
+# Asset detail page
 # ---------------------------------------------------------------------------
 
 @app.route("/asset/<asset_type>/<symbol>")
+@login_required
 def asset_page(asset_type, symbol):
-    if "user_id" not in session:
-        return redirect(url_for("login"))
-
     asset_type = asset_type.lower()
     if asset_type not in ("stock", "crypto"):
         flash("Unknown asset type.", "error")
         return redirect(url_for("dashboard"))
 
+    user = current_user()
     symbol = symbol.upper()
     display_name = request.args.get("name", "").strip() or symbol
 
     return render_template(
         "asset.html",
-        username=session["username"],
+        username=user["username"],
         symbol=symbol,
         asset_type=asset_type,
         display_name=display_name,
@@ -373,10 +349,8 @@ def asset_page(asset_type, symbol):
 
 
 @app.route("/api/asset/<asset_type>/<symbol>/chart")
+@login_required
 def api_asset_chart(asset_type, symbol):
-    if "user_id" not in session:
-        return jsonify({"error": "not logged in"}), 401
-
     asset_type = asset_type.lower()
     if asset_type not in ("stock", "crypto"):
         return jsonify({"error": "invalid asset type"}), 400
@@ -392,5 +366,63 @@ def api_asset_chart(asset_type, symbol):
     return jsonify(data)
 
 
+# ---------------------------------------------------------------------------
+# Buy / Sell APIs
+# ---------------------------------------------------------------------------
+
+@app.route("/api/trade/buy", methods=["POST"])
+@login_required
+def api_trade_buy():
+    data = request.get_json(silent=True) or {}
+    symbol = (data.get("symbol") or "").strip()
+    asset_type = (data.get("asset_type") or "").strip().lower()
+    quantity = data.get("quantity")
+
+    if not symbol or asset_type not in ("stock", "crypto"):
+        return jsonify({"error": "Invalid request."}), 400
+
+    ok, result = portfolio_db.buy_asset(session["user_id"], symbol, asset_type, quantity)
+    if not ok:
+        return jsonify({"error": result}), 400
+
+    return jsonify({"success": True, **result})
+
+
+@app.route("/api/trade/sell", methods=["POST"])
+@login_required
+def api_trade_sell():
+    data = request.get_json(silent=True) or {}
+    market = (data.get("market") or "").strip()
+    lot_id = (data.get("lot_id") or "").strip()
+    quantity = data.get("quantity")
+
+    if not lot_id or not market:
+        return jsonify({"error": "Invalid request."}), 400
+
+    ok, result = portfolio_db.sell_lot(session["user_id"], market, lot_id, quantity)
+    if not ok:
+        return jsonify({"error": result}), 400
+
+    return jsonify({"success": True, **result})
+
+
+# ---------------------------------------------------------------------------
+# Startup bootstrap
+# ---------------------------------------------------------------------------
+
+try:
+    if is_database_configured():
+        auth_db.init_indexes()
+        portfolio_db.init_indexes()
+        admin = auth_db.ensure_admin_user()
+        if admin:
+            portfolio_db.ensure_admin_portfolio(admin["id"], admin["username"])
+except Exception as exc:
+    # Do not make the application completely unimportable just because Atlas
+    # is temporarily unavailable. Auth/database routes will surface a useful
+    # configuration error instead.
+    print(f"[startup] MongoDB initialization skipped: {exc}")
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=os.getenv("FLASK_DEBUG", "0") == "1")
+    app.run(debug=True)

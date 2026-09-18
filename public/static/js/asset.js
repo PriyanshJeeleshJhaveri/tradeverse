@@ -1,17 +1,17 @@
 // TradeVerse asset detail page logic (single stock or crypto coin)
 // Draws a live price chart (Chart.js) for the selected time range, fills in
-// price stats, and wires the supported immediate Buy action.
+// current/low/high/change stats, and handles the Buy Now market-order modal.
 
 const ASSET_SYMBOL = window.TRADEVERSE_ASSET_SYMBOL;
 const ASSET_TYPE = window.TRADEVERSE_ASSET_TYPE;
+const IS_INDIAN_STOCK = ASSET_TYPE === "stock" && ASSET_SYMBOL.toUpperCase().endsWith(".NS");
 
 let chartInstance = null;
-let currentPrice = null;
-const CURRENCY_SYMBOL = "$";
+let lastKnownPrice = null; // used only to show an estimated total in the buy modal
 
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";
-    return CURRENCY_SYMBOL + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 });
+    return "$" + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 });
 }
 
 function setStatValue(elId, text, changeValue) {
@@ -79,8 +79,9 @@ function loadChart(rangeKey) {
             statusEl.classList.add("hidden");
 
             const isUp = data.change_percent >= 0;
-            currentPrice = Number(data.current_price);
             renderChart(data.labels, data.prices, isUp);
+
+            lastKnownPrice = data.current_price;
 
             setStatValue("statCurrent", formatMoney(data.current_price));
             setStatValue("statLow", formatMoney(data.period_low));
@@ -98,44 +99,111 @@ function loadChart(rangeKey) {
         });
 }
 
-
-function isIndianStock() {
-    return ASSET_TYPE === "stock" && (ASSET_SYMBOL.endsWith(".NS") || ASSET_SYMBOL.endsWith(".BO"));
-}
+// ---------------------------------------------------------------------------
+// Buy Now modal - a market order at the current live price. The estimated
+// total shown here uses the last price the chart fetched; the real trade is
+// always priced server-side with a fresh quote at the moment of confirming.
+// ---------------------------------------------------------------------------
 
 function openBuyModal() {
-    if (isIndianStock()) {
-        alert("Trading for Indian stocks is not available yet.");
-        return;
+    const qtyInput = document.getElementById("tradeQuantityInput");
+    qtyInput.value = "1";
+    qtyInput.step = ASSET_TYPE === "crypto" ? "any" : "1";
+
+    document.getElementById("tradeModalSymbol").textContent = ASSET_SYMBOL;
+    document.getElementById("tradeModalError").classList.add("hidden");
+    document.getElementById("tradeModalSuccess").classList.add("hidden");
+    document.getElementById("tradeModalConfirm").disabled = false;
+    document.getElementById("tradeModalConfirm").textContent = "Confirm Buy";
+
+    updateBuyModalTotal();
+    document.getElementById("tradeModalOverlay").classList.remove("hidden");
+}
+
+function closeBuyModal() {
+    document.getElementById("tradeModalOverlay").classList.add("hidden");
+}
+
+function readQuantity() {
+    const raw = document.getElementById("tradeQuantityInput").value;
+    return raw === "" ? NaN : parseFloat(raw);
+}
+
+function validateQuantity(quantity) {
+    if (isNaN(quantity) || quantity <= 0) {
+        return "Quantity must be greater than zero.";
     }
-    if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
-        alert("Current price is not available. Please wait for the price to load and try again.");
+    if (ASSET_TYPE === "stock" && quantity !== Math.floor(quantity)) {
+        return "Stock quantity must be a whole number of shares.";
+    }
+    return null;
+}
+
+function updateBuyModalTotal() {
+    const quantity = readQuantity();
+    const errorEl = document.getElementById("tradeModalError");
+    const confirmBtn = document.getElementById("tradeModalConfirm");
+    const totalEl = document.getElementById("tradeModalTotal");
+
+    const validationError = validateQuantity(quantity);
+    if (validationError) {
+        totalEl.textContent = "--";
+        errorEl.textContent = validationError;
+        errorEl.classList.remove("hidden");
+        confirmBtn.disabled = true;
         return;
     }
 
-    const market = ASSET_TYPE === "crypto" ? "CCME" : "USE";
-    fetch("/api/portfolio/" + market)
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-            if (data.error) {
-                alert(data.error);
+    errorEl.classList.add("hidden");
+    confirmBtn.disabled = false;
+    totalEl.textContent = lastKnownPrice !== null ? formatMoney(lastKnownPrice * quantity) : "--";
+}
+
+function submitBuy() {
+    const quantity = readQuantity();
+    const validationError = validateQuantity(quantity);
+    if (validationError) {
+        updateBuyModalTotal();
+        return;
+    }
+
+    const confirmBtn = document.getElementById("tradeModalConfirm");
+    const errorEl = document.getElementById("tradeModalError");
+    const successEl = document.getElementById("tradeModalSuccess");
+
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Placing order...";
+    errorEl.classList.add("hidden");
+
+    fetch("/api/trade/buy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: ASSET_SYMBOL, asset_type: ASSET_TYPE, quantity: quantity }),
+    })
+        .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+        .then(function (result) {
+            if (!result.ok || result.body.error) {
+                errorEl.textContent = result.body.error || "Something went wrong. Please try again.";
+                errorEl.classList.remove("hidden");
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = "Confirm Buy";
                 return;
             }
-            TradeModal.open({
-                action: "buy",
-                assetType: ASSET_TYPE,
-                market: market,
-                symbol: ASSET_SYMBOL,
-                currentPrice: currentPrice,
-                currencySymbol: "$",
-                balance: Number(data.wallet),
-                onSuccess: function (result) {
-                    alert("Buy completed successfully. New wallet balance: $" + Number(result.wallet).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-                }
-            });
+
+            successEl.textContent = "Bought " + quantity + " " + ASSET_SYMBOL + " successfully!";
+            successEl.classList.remove("hidden");
+            confirmBtn.textContent = "Done";
+
+            setTimeout(function () {
+                closeBuyModal();
+                loadChart(document.querySelector(".chart-tab.active").getAttribute("data-range"));
+            }, 900);
         })
         .catch(function () {
-            alert("Could not load your wallet balance. Please try again.");
+            errorEl.textContent = "Could not reach the server. Please try again.";
+            errorEl.classList.remove("hidden");
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Confirm Buy";
         });
 }
 
@@ -162,13 +230,29 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     });
 
-    loadChart("24H");
+    // Buy Now + modal wiring
+    const buyBtn = document.getElementById("buyNowBtn");
+    if (IS_INDIAN_STOCK) {
+        buyBtn.disabled = true;
+        buyBtn.title = "Indian stock market trading isn't available yet.";
+        const note = document.getElementById("assetTradeNote");
+        note.textContent = "Indian stock market trading isn't available yet.";
+        note.classList.remove("hidden");
+    } else {
+        buyBtn.addEventListener("click", openBuyModal);
+    }
 
-    const buyButton = document.querySelector(".btn-buy");
-    if (buyButton) buyButton.addEventListener("click", openBuyModal);
+    document.getElementById("tradeQuantityInput").addEventListener("input", updateBuyModalTotal);
+    document.getElementById("tradeModalConfirm").addEventListener("click", submitBuy);
+    document.getElementById("tradeModalCancel").addEventListener("click", closeBuyModal);
 
-    const limitButton = document.querySelector(".btn-limit");
-    if (limitButton) limitButton.addEventListener("click", function () {
-        alert("Limit orders are not available yet. Use Buy Now for an immediate paper trade.");
+    document.getElementById("tradeModalOverlay").addEventListener("click", function (e) {
+        if (e.target === this) closeBuyModal();
     });
+
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeBuyModal();
+    });
+
+    loadChart("24H");
 });

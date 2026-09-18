@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - TradeVerse</title>
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="topbar">
+    <div class="topbar-inner topbar-dashboard">
+        <div class="logo-wrap">
+            <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+        </div>
+        <div class="topbar-user">
+            ADMIN &middot; <strong>{{ admin.username }}</strong> &middot;
+            <a href="{{ url_for('logout') }}">Log Out</a>
+        </div>
+    </div>
+</div>
+
+<div class="admin-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <div class="admin-header-row">
+        <div>
+            <p class="admin-eyebrow">TRADEVERSE ADMIN</p>
+            <h1>Admin Dashboard</h1>
+            <p class="admin-subtitle">Your administrator account and default portfolio are stored in MongoDB Atlas.</p>
+        </div>
+        <div class="admin-actions">
+            <a class="btn btn-navy" href="{{ url_for('dashboard') }}">User Dashboard</a>
+            <a class="btn btn-outline" href="{{ url_for('admin_users') }}">Manage Users</a>
+        </div>
+    </div>
+
+    <div class="admin-stats-grid">
+        <div class="admin-stat-card"><span>Total Accounts</span><strong>{{ user_count }}</strong></div>
+        <div class="admin-stat-card"><span>Portfolio Holdings</span><strong>{{ holdings_count }}</strong></div>
+        <div class="admin-stat-card"><span>Portfolio Name</span><strong>{{ portfolio.portfolio_name }}</strong></div>
+        <div class="admin-stat-card"><span>Role</span><strong>{{ admin.role }}</strong></div>
+    </div>
+
+    <div class="admin-card">
+        <div class="admin-card-header">
+            <div>
+                <h2>{{ portfolio.portfolio_name }}</h2>
+                <p>{{ portfolio.description }}</p>
+            </div>
+            <a class="btn btn-navy" href="{{ url_for('admin_portfolio') }}">Manage Portfolio</a>
+        </div>
+
+        <div class="wallet-grid">
+            <div class="wallet-card"><span>Indian Stock Wallet</span><strong>₹ {{ '%.2f'|format(portfolio.wallet.ISE) }}</strong></div>
+            <div class="wallet-card"><span>US Stock Wallet</span><strong>$ {{ '%.2f'|format(portfolio.wallet.USE) }}</strong></div>
+            <div class="wallet-card"><span>Crypto Wallet</span><strong>$ {{ '%.2f'|format(portfolio.wallet.CCME) }}</strong></div>
+        </div>
+
+        <div class="admin-info-grid">
+            <div><span>Admin email</span><strong>{{ admin.email }}</strong></div>
+            <div><span>Admin phone</span><strong>{{ admin.phone }}</strong></div>
+            <div><span>Default portfolio</span><strong>{{ 'Yes' if portfolio.is_default else 'No' }}</strong></div>
+            <div><span>Admin portfolio</span><strong>{{ 'Yes' if portfolio.is_admin_portfolio else 'No' }}</strong></div>
+        </div>
+    </div>
+</div>
+</body>
+</html>

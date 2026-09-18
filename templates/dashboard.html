@@ -4,17 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard - TradeVerse</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
 </head>
 <body>
 
     <div class="topbar">
         <div class="topbar-inner topbar-dashboard">
             <div class="logo-wrap">
-                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+                <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
             </div>
             <div class="topbar-user">
-                Hi, <strong>{{ username }}</strong> &middot; <a href="{{ url_for('logout') }}">Log Out</a>
+                Hi, <strong>{{ username }}</strong>{% if is_admin %} &middot; <a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %} &middot; <a href="{{ url_for('logout') }}">Log Out</a>
             </div>
         </div>
     </div>
@@ -53,7 +53,7 @@
 
         <!-- Bitcoin hero box -->
         <div class="btc-hero">
-            <img src="{{ url_for('static', filename='images/bitcoin.png') }}" alt="Bitcoin" class="btc-hero-img">
+            <img src="{{ url_for('local_static', filename='images/bitcoin.png') }}" alt="Bitcoin" class="btc-hero-img">
             <div class="btc-hero-info">
                 <span class="btc-hero-label">Bitcoin</span>
                 <span id="btcPrice" class="btc-hero-price">--</span>
@@ -85,7 +85,7 @@
         <p class="refresh-note">Prices refresh automatically every 10 minutes.</p>
     </div>
 
-    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    <script src="{{ url_for('local_static', filename='js/script.js') }}"></script>
+    <script src="{{ url_for('local_static', filename='js/dashboard.js') }}"></script>
 </body>
 </html>

@@ -19,13 +19,12 @@ Config is read from a `.env` file (see `.env.example`) via python-dotenv:
     COINGECKO_API_KEY          optional CoinGecko demo/pro API key
     TWELVEDATA_API_KEY         Twelve Data API key (required for stock/index prices)
     PRICE_CACHE_TTL_SECONDS    quote/chart cache lifetime in seconds (default 600 = 10 min)
-    REQUEST_TIMEOUT_SECONDS    HTTP timeout in seconds (default 5)
+    REQUEST_TIMEOUT_SECONDS    HTTP timeout in seconds (default 10)
 """
 
 import os
 import time
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from dotenv import load_dotenv
@@ -35,7 +34,7 @@ load_dotenv()
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY", "").strip()
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "600"))
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "5"))
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 SEARCH_CACHE_TTL_SECONDS = 60
 
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
@@ -477,13 +476,8 @@ def search_symbols(query, limit=8):
     if cached and (_now() - cached["ts"] < SEARCH_CACHE_TTL_SECONDS):
         return cached["data"]
 
-    # Search both providers concurrently so a slow external API does not
-    # serially consume the whole Vercel function duration.
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        stock_future = executor.submit(_twelvedata_search, query, 6)
-        crypto_future = executor.submit(_coingecko_search, query, 6)
-        stock_results = stock_future.result()
-        crypto_results = crypto_future.result()
+    stock_results = _twelvedata_search(query, limit=6)
+    crypto_results = _coingecko_search(query, limit=6)
 
     # Stocks first, always - crypto only fills whatever slots are left.
     results = (stock_results + crypto_results)[:limit]
