@@ -233,15 +233,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     // Buy Now + modal wiring
     const buyBtn = document.getElementById("buyNowBtn");
-    if (IS_INDIAN_STOCK) {
-        buyBtn.disabled = true;
-        buyBtn.title = "Indian stock market trading isn't available yet.";
-        const note = document.getElementById("assetTradeNote");
-        note.textContent = "Indian stock market trading isn't available yet.";
-        note.classList.remove("hidden");
-    } else {
-        buyBtn.addEventListener("click", openBuyModal);
-    }
+    buyBtn.addEventListener("click", openBuyModal);
 
     document.getElementById("tradeQuantityInput").addEventListener("input", updateBuyModalTotal);
     document.getElementById("tradeModalConfirm").addEventListener("click", submitBuy);

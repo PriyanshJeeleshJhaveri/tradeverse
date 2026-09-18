@@ -5,7 +5,7 @@ const MARKET = window.TRADEVERSE_MARKET;
 const CURRENCY_SYMBOL = window.TRADEVERSE_CURRENCY_SYMBOL;
 const COLUMN_COUNT = 9;
 const IS_CRYPTO_MARKET = MARKET === "CCME";
-const SELLING_SUPPORTED = MARKET !== "ISE"; // Indian stock market trading isn't available yet
+const SELLING_SUPPORTED = true;
 
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";

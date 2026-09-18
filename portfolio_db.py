@@ -190,9 +190,6 @@ def buy_asset(user_id: str, symbol: str, asset_type: str, quantity: Any):
     symbol = symbol.strip().upper()
     market = resolve_market_for_symbol(symbol, asset_type)
 
-    if market == "ISE":
-        return False, "Indian stock market trading isn't available yet."
-
     try:
         quantity = float(quantity)
     except (TypeError, ValueError):
@@ -245,8 +242,6 @@ def buy_asset(user_id: str, symbol: str, asset_type: str, quantity: Any):
 def sell_lot(user_id: str, market: str, lot_id: str, quantity: Any):
     market = (market or "").strip().upper()
 
-    if market == "ISE":
-        return False, "Indian stock market trading isn't available yet."
     if market not in MARKETS:
         return False, "Unknown market."
 
