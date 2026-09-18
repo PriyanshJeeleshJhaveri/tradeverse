@@ -2,7 +2,8 @@
 price_service.py
 ------------------
 Live price lookups for TradeVerse, talking directly to:
-  - Twelve Data (stocks & indices)
+  - Yahoo Finance (Indian NSE/BSE stocks)
+  - Twelve Data (US stocks & indices)
   - CoinGecko's public REST API (crypto)
 
 Also provides:
@@ -17,14 +18,15 @@ hammer either API on every page view / keystroke.
 
 Config is read from a `.env` file (see `.env.example`) via python-dotenv:
     COINGECKO_API_KEY          optional CoinGecko demo/pro API key
-    TWELVEDATA_API_KEY         Twelve Data API key (required for stock/index prices)
+    TWELVEDATA_API_KEY         Twelve Data API key for US stock/index prices
     PRICE_CACHE_TTL_SECONDS    quote/chart cache lifetime in seconds (default 600 = 10 min)
     REQUEST_TIMEOUT_SECONDS    HTTP timeout in seconds (default 10)
 """
 
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -36,6 +38,11 @@ TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "").strip()
 CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "600"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 SEARCH_CACHE_TTL_SECONDS = 60
+
+YAHOO_FINANCE_BASE_URL = "https://query1.finance.yahoo.com"
+YAHOO_SEARCH_URL = YAHOO_FINANCE_BASE_URL + "/v1/finance/search"
+YAHOO_CHART_URL = YAHOO_FINANCE_BASE_URL + "/v8/finance/chart"
+INDIA_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com"
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"
@@ -90,6 +97,210 @@ def _now():
 def _is_crypto_symbol(symbol):
     symbol_u = symbol.strip().upper()
     return symbol_u in CRYPTO_ID_MAP or symbol_u.endswith("-USD")
+
+
+# ---------------------------------------------------------------------------
+# Yahoo Finance (Indian NSE/BSE stocks)
+# ---------------------------------------------------------------------------
+
+def _is_indian_stock_symbol(symbol):
+    """True for Yahoo Finance NSE (.NS) and BSE (.BO) equity symbols."""
+    symbol_u = (symbol or "").strip().upper()
+    return symbol_u.endswith(".NS") or symbol_u.endswith(".BO")
+
+
+def _yahoo_headers():
+    # A normal browser-like User-Agent makes the server-side request more
+    # reliable while keeping Yahoo calls entirely on the Flask backend.
+    return {
+        "User-Agent": "Mozilla/5.0 (compatible; TradeVerse/1.0; +https://vercel.com/)"
+    }
+
+
+def _yahoo_chart_json(symbol, interval="1d", range_value="1d",
+                      period1=None, period2=None):
+    """Fetch Yahoo Finance chart JSON for an Indian stock."""
+    params = {"interval": interval}
+    if period1 is not None and period2 is not None:
+        params["period1"] = int(period1)
+        params["period2"] = int(period2)
+    else:
+        params["range"] = range_value
+
+    try:
+        resp = requests.get(
+            f"{YAHOO_CHART_URL}/{symbol}",
+            params=params,
+            headers=_yahoo_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+
+        chart = payload.get("chart", {})
+        if chart.get("error"):
+            print(f"[price_service] Yahoo Finance error for {symbol}: {chart['error']}")
+            return None
+
+        results = chart.get("result") or []
+        return results[0] if results else None
+    except Exception as e:
+        print(f"[price_service] Yahoo Finance request failed for {symbol}: {e}")
+        return None
+
+
+def _yahoo_india_quote(symbol):
+    """Latest INR quote for an NSE/BSE Indian stock."""
+    symbol = symbol.strip().upper()
+    result = _yahoo_chart_json(symbol, interval="1d", range_value="1d")
+    if not result:
+        return None
+
+    meta = result.get("meta") or {}
+    price = meta.get("regularMarketPrice")
+    if price is None:
+        return None
+
+    previous_close = (
+        meta.get("chartPreviousClose")
+        or meta.get("previousClose")
+    )
+
+    # Yahoo's Indian equity quotes are already denominated in INR.
+    # Calculate the change ourselves so the existing TradeVerse logic
+    # remains unchanged.
+    try:
+        price = float(price)
+        previous_close = float(previous_close) if previous_close is not None else None
+    except (TypeError, ValueError):
+        return None
+
+    change = (price - previous_close) if previous_close is not None else None
+    change_percent = (
+        (change / previous_close * 100)
+        if change is not None and previous_close
+        else None
+    )
+
+    symbol_name = (
+        meta.get("longName")
+        or meta.get("shortName")
+        or symbol
+    )
+    currency = meta.get("currency") or "INR"
+
+    return {
+        "symbol": symbol,
+        "name": symbol_name,
+        "price": round(price, 4),
+        "previous_close": round(previous_close, 4) if previous_close is not None else None,
+        "change": round(change, 4) if change is not None else None,
+        "change_percent": round(change_percent, 2) if change_percent is not None else None,
+        "currency": currency,
+        "exchange": "NSE" if symbol.endswith(".NS") else "BSE",
+    }
+
+
+def _yahoo_india_search(query, limit=6):
+    """
+    Live Indian-stock autocomplete using Yahoo Finance's search endpoint.
+    Results are restricted to NSE (.NS) and BSE (.BO) equity symbols so the
+    existing US-stock and crypto search behaviour remains unchanged.
+    """
+    try:
+        resp = requests.get(
+            YAHOO_SEARCH_URL,
+            params={
+                "q": query,
+                "quotesCount": max(10, limit * 4),
+                "newsCount": 0,
+                "enableFuzzyQuery": "true",
+            },
+            headers=_yahoo_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        quotes = payload.get("quotes") or []
+
+        results = []
+        seen = set()
+
+        for row in quotes:
+            symbol = (row.get("symbol") or "").upper()
+            quote_type = (row.get("quoteType") or "").upper()
+
+            if quote_type not in ("EQUITY", "ETF"):
+                continue
+            if not _is_indian_stock_symbol(symbol):
+                continue
+            if symbol in seen:
+                continue
+
+            seen.add(symbol)
+            exchange_code = (row.get("exchange") or "").upper()
+            exchange_name = (
+                "NSE" if symbol.endswith(".NS")
+                else "BSE" if symbol.endswith(".BO")
+                else exchange_code or "India"
+            )
+
+            results.append({
+                "symbol": symbol,
+                "name": row.get("longname")
+                        or row.get("shortname")
+                        or symbol,
+                "type": "stock",
+                "exchange": exchange_name,
+                "currency": "INR",
+            })
+
+            if len(results) >= limit:
+                break
+
+        return results
+    except Exception as e:
+        print(f"[price_service] Yahoo India search failed for '{query}': {e}")
+        return []
+
+
+def _yahoo_india_time_series(symbol, interval, lookback):
+    """Chronological close-price series from Yahoo Finance for Indian stocks."""
+    now = datetime.now(timezone.utc)
+    start = now - lookback
+
+    result = _yahoo_chart_json(
+        symbol,
+        interval=interval,
+        period1=start.timestamp(),
+        period2=now.timestamp(),
+    )
+    if not result:
+        return None
+
+    timestamps = result.get("timestamp") or []
+    quote_rows = (result.get("indicators") or {}).get("quote") or []
+    if not quote_rows:
+        return None
+
+    closes = quote_rows[0].get("close") or []
+    points = []
+
+    for ts, close in zip(timestamps, closes):
+        if close is None:
+            continue
+        try:
+            # Keep labels in Indian Standard Time because these are Indian
+            # market prices, while the chart logic remains unchanged.
+            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(INDIA_TIMEZONE)
+            points.append({
+                "t": dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "price": float(close),
+            })
+        except (TypeError, ValueError, OSError):
+            continue
+
+    return points or None
 
 
 # ---------------------------------------------------------------------------
@@ -409,10 +620,12 @@ def _coingecko_market_chart_range(coin_id, from_ts, to_ts, interval=None):
 
 def get_quote(symbol):
     """
-    Returns a dict with symbol, name, price, previous_close, change and
-    change_percent for `symbol`, using CoinGecko for crypto tickers (e.g.
-    BTC-USD) and Twelve Data for everything else (stocks & indices).
-    Cached for `PRICE_CACHE_TTL_SECONDS` (default 10 minutes).
+    Returns a quote using:
+      - Yahoo Finance for Indian NSE/BSE stocks (.NS/.BO), in INR
+      - CoinGecko for crypto
+      - Twelve Data for US stocks/other non-crypto symbols
+
+    The public function signature and cache behaviour are unchanged.
     """
     symbol_key = symbol.strip().upper()
     cached = _quote_cache.get(symbol_key)
@@ -421,6 +634,8 @@ def get_quote(symbol):
 
     if _is_crypto_symbol(symbol_key):
         data = _coingecko_quote(symbol_key)
+    elif _is_indian_stock_symbol(symbol_key):
+        data = _yahoo_india_quote(symbol_key)
     else:
         data = _twelvedata_quote(symbol_key)
 
@@ -460,12 +675,15 @@ def get_index_quote(label):
 
 def search_symbols(query, limit=8):
     """
-    Live "search as you type" for the dashboard search bar. Searches both
-    US stocks (Twelve Data) and crypto (CoinGecko) - stock matches are
-    always listed before crypto matches, regardless of how many of each
-    come back, since the concatenation order below is preserved by the
-    slice at the end.
-    Cached per-query for SEARCH_CACHE_TTL_SECONDS to keep fast typing cheap.
+    Live "search as you type" for the dashboard search bar.
+
+    Search sources:
+      - Indian NSE/BSE stocks -> Yahoo Finance
+      - US stocks -> Twelve Data (existing behaviour)
+      - Crypto -> CoinGecko (existing behaviour)
+
+    Indian results are placed before US/crypto results so an input such as
+    "RELIANCE" resolves naturally to the NSE/BSE equity.
     """
     query = (query or "").strip()
     if not query:
@@ -476,11 +694,11 @@ def search_symbols(query, limit=8):
     if cached and (_now() - cached["ts"] < SEARCH_CACHE_TTL_SECONDS):
         return cached["data"]
 
-    stock_results = _twelvedata_search(query, limit=6)
-    crypto_results = _coingecko_search(query, limit=6)
+    india_results = _yahoo_india_search(query, limit=4)
+    us_results = _twelvedata_search(query, limit=4)
+    crypto_results = _coingecko_search(query, limit=4)
 
-    # Stocks first, always - crypto only fills whatever slots are left.
-    results = (stock_results + crypto_results)[:limit]
+    results = (india_results + us_results + crypto_results)[:limit]
 
     _search_cache[query_key] = {"data": results, "ts": _now()}
     return results
@@ -524,13 +742,30 @@ def get_chart_data(symbol, asset_type, range_key):
                 coin_id, from_dt.timestamp(), now.timestamp(), range_cfg["cg_interval"]
             )
     else:
-        start_dt = now - range_cfg["lookback"]
-        points = _twelvedata_time_series(
-            symbol,
-            range_cfg["td_interval"],
-            start_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
-        )
+        if _is_indian_stock_symbol(symbol):
+            # Yahoo Finance interval mapping:
+            # 24H -> 15-minute closes, 1W -> hourly closes,
+            # 1M -> daily closes, 1Y -> weekly closes.
+            yahoo_interval = {
+                "24H": "15m",
+                "1W": "1h",
+                "1M": "1d",
+                "1Y": "1wk",
+            }.get(range_key, "1d")
+
+            points = _yahoo_india_time_series(
+                symbol,
+                yahoo_interval,
+                range_cfg["lookback"],
+            )
+        else:
+            start_dt = now - range_cfg["lookback"]
+            points = _twelvedata_time_series(
+                symbol,
+                range_cfg["td_interval"],
+                start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+            )
 
     if not points:
         # fetch failed - fall back to whatever we had before, even if stale

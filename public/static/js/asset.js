@@ -4,14 +4,15 @@
 
 const ASSET_SYMBOL = window.TRADEVERSE_ASSET_SYMBOL;
 const ASSET_TYPE = window.TRADEVERSE_ASSET_TYPE;
-const IS_INDIAN_STOCK = ASSET_TYPE === "stock" && ASSET_SYMBOL.toUpperCase().endsWith(".NS");
+const IS_INDIAN_STOCK = ASSET_TYPE === "stock" && (ASSET_SYMBOL.toUpperCase().endsWith(".NS") || ASSET_SYMBOL.toUpperCase().endsWith(".BO"));
 
 let chartInstance = null;
 let lastKnownPrice = null; // used only to show an estimated total in the buy modal
 
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";
-    return "$" + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 5 });
+    const prefix = IS_INDIAN_STOCK ? "₹" : "$";
+    return prefix + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: IS_INDIAN_STOCK ? 2 : 5 });
 }
 
 function setStatValue(elId, text, changeValue) {
