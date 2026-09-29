@@ -43,10 +43,6 @@ function renderHoldingRow(h) {
           "\" data-price=\"" + h.price + "\" data-available=\"" + h.quantity + "\">Sell Now</button>"
         : "<button type=\"button\" class=\"btn-sell-now\" disabled title=\"Indian stock market trading isn't available yet.\">Sell Now</button>";
 
-    const sellLimitBtn = "<button type=\"button\" class=\"btn-sell-limit\"" +
-        (SELLING_SUPPORTED ? " title=\"Coming soon\"" : " disabled title=\"Indian stock market trading isn't available yet.\"") +
-        ">Sell Limit</button>";
-
     return (
         "<tr>" +
             "<td>" + h.name + "</td>" +
@@ -57,7 +53,7 @@ function renderHoldingRow(h) {
             "<td class=\"num\">" + formatMoney(h.total_amount) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + formatMoney(h.profit_loss) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + h.profit_loss_percent.toFixed(2) + "%</td>" +
-            "<td class=\"actions-cell\">" + sellNowBtn + sellLimitBtn + "</td>" +
+            "<td class=\"actions-cell\">" + sellNowBtn + "</td>" +
         "</tr>"
     );
 }

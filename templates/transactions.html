@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transaction History - TradeVerse</title>
+    <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="topbar">
+        <div class="topbar-inner topbar-dashboard">
+            <div class="logo-wrap">
+                <img src="{{ url_for('local_static', filename='images/logo.png') }}" alt="TradeVerse Logo">
+            </div>
+            <div class="topbar-user">
+                Hi, <strong>{{ username }}</strong>{% if is_admin %} &middot; <a href="{{ url_for('admin_dashboard') }}">Admin</a>{% endif %} &middot; <a href="{{ url_for('logout') }}">Log Out</a>
+            </div>
+        </div>
+    </div>
+
+    <main class="transaction-page">
+        <div class="transaction-heading-row">
+            <button id="transactionMenuBtn" class="transaction-menu-btn" type="button" title="Open menu" aria-label="Open menu">
+                <span></span><span></span><span></span>
+            </button>
+            <h1>Transaction History</h1>
+            <div class="transaction-menu-wrap">
+                <div id="transactionDropdown" class="dropdown-menu hidden">
+                    <a class="dropdown-item" href="{{ url_for('market_page', market='ISE') }}">Indian Stock Market <small>Portfolio &amp; Wallet</small></a>
+                    <a class="dropdown-item" href="{{ url_for('market_page', market='USE') }}">US Stock Exchange <small>Portfolio &amp; Wallet</small></a>
+                    <a class="dropdown-item" href="{{ url_for('market_page', market='CCME') }}">Crypto Currency Market Exchange <small>Portfolio &amp; Wallet</small></a>
+                    <a class="dropdown-item" href="{{ url_for('transaction_history') }}">Transaction History <small>Indian, US &amp; Crypto</small></a>
+                </div>
+            </div>
+        </div>
+
+        <div class="transaction-sections">
+            {% set section_order = [('ISE', 'Indian Stock market transaction history'), ('USE', 'US Stock market transaction history'), ('CCME', 'crypto currency market transaction history')] %}
+            {% for market, title in section_order %}
+                <section class="transaction-section">
+                    <div class="transaction-section-title">{{ title }}</div>
+                    {% set rows = transactions.get(market, []) %}
+                    {% if rows %}
+                        <div class="transaction-table-scroll">
+                            <table class="transaction-table">
+                                <thead>
+                                    <tr>
+                                        <th>Sr. No.</th>
+                                        <th>Name</th>
+                                        <th>Amount of stock or coin</th>
+                                        <th>Bought Price</th>
+                                        <th>Sell Price</th>
+                                        <th>Sell Date</th>
+                                        <th>Profit and Loss in Amount</th>
+                                        <th>Profit and Loss in Percentage</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for txn in rows %}
+                                        {% set positive = txn.profit_loss_amount >= 0 %}
+                                        {% set currency = currency_symbols.get(market, '$') %}
+                                        <tr>
+                                            <td>{{ loop.index }}</td>
+                                            <td><strong>{{ txn.name }}</strong></td>
+                                            <td class="num">{{ txn.quantity }}</td>
+                                            <td class="num">{{ currency }}{{ '%.2f'|format(txn.bought_price) }}</td>
+                                            <td class="num">{{ currency }}{{ '%.2f'|format(txn.sell_price) }}</td>
+                                            <td>{{ txn.sell_date or '--' }}</td>
+                                            <td class="num transaction-pl {{ 'up' if positive else 'down' }}">{{ '+' if positive else '' }}{{ currency }}{{ '%.2f'|format(txn.profit_loss_amount) }}</td>
+                                            <td class="num transaction-pl {{ 'up' if positive else 'down' }}">{{ '+' if positive else '' }}{{ '%.2f'|format(txn.profit_loss_percent) }}%</td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="transaction-empty">No completed transactions yet.</div>
+                    {% endif %}
+                </section>
+            {% endfor %}
+        </div>
+
+        <p class="transaction-note">Only completed Sell Now transactions are recorded here. Buying creates a portfolio holding; the transaction appears in history when some or all of that holding is sold.</p>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-navy transaction-back-btn">Back to Dashboard</a>
+    </main>
+
+    <script src="{{ url_for('local_static', filename='js/script.js') }}"></script>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const btn = document.getElementById("transactionMenuBtn");
+            const menu = document.getElementById("transactionDropdown");
+            const wrap = document.querySelector(".transaction-menu-wrap");
+            btn.addEventListener("click", function (event) {
+                event.stopPropagation();
+                menu.classList.toggle("hidden");
+            });
+            document.addEventListener("click", function (event) {
+                if (!wrap.contains(event.target)) menu.classList.add("hidden");
+            });
+        });
+    </script>
+</body>
+</html>

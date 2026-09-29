@@ -221,6 +221,23 @@ def market_page(market):
     )
 
 
+@app.route("/transactions")
+@login_required
+def transaction_history():
+    user = current_user()
+    transactions = {
+        market: portfolio_db.get_transaction_history(user["id"], market)
+        for market in portfolio_db.MARKETS
+    }
+    return render_template(
+        "transactions.html",
+        username=user["username"],
+        transactions=transactions,
+        market_names=MARKET_FULL_NAMES,
+        currency_symbols=MARKET_CURRENCY_SYMBOL,
+    )
+
+
 @app.route("/logout")
 def logout():
     session.clear()

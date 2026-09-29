@@ -81,6 +81,7 @@ def _empty_portfolio_doc(
         "ISE_portfolio": holdings.get("ISE", []),
         "USE_portfolio": holdings.get("USE", []),
         "CCME_portfolio": holdings.get("CCME", []),
+        "transactions": [],
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc),
     }
@@ -292,9 +293,33 @@ def sell_lot(user_id: str, market: str, lot_id: str, quantity: Any):
     wallet = doc.get("wallet", {})
     new_balance = round(wallet.get(market, 0) + proceeds, 2)
 
+    sell_date = _utc_date()
+    buy_amount = round(lot.get("bought_price", 0) * quantity, 2)
+    profit_loss_amount = round(proceeds - buy_amount, 2)
+    profit_loss_percent = round((profit_loss_amount / buy_amount) * 100, 2) if buy_amount else 0.0
+    transaction = {
+        "id": uuid.uuid4().hex,
+        "market": market,
+        "name": lot["name"],
+        "quantity": quantity,
+        "bought_price": round(lot.get("bought_price", 0), 2),
+        "sell_price": round(price, 2),
+        "sell_date": sell_date,
+        "profit_loss_amount": profit_loss_amount,
+        "profit_loss_percent": profit_loss_percent,
+        "created_at": datetime.now(timezone.utc),
+    }
+
     collection.update_one(
         {"user_id": user_id},
-        {"$set": {field: holdings, "wallet." + market: new_balance, "updated_at": datetime.now(timezone.utc)}},
+        {
+            "$set": {
+                field: holdings,
+                "wallet." + market: new_balance,
+                "updated_at": datetime.now(timezone.utc),
+            },
+            "$push": {"transactions": transaction},
+        },
     )
 
     return True, {
@@ -302,7 +327,26 @@ def sell_lot(user_id: str, market: str, lot_id: str, quantity: Any):
         "wallet": new_balance,
         "proceeds": proceeds,
         "remaining_quantity": remaining_quantity,
+        "transaction": transaction,
     }
+
+
+def get_transaction_history(user_id: str, market: str | None = None):
+    """Return completed sell transactions, newest first."""
+    doc = get_portfolio_doc(user_id)
+    if not doc:
+        return []
+
+    transactions = list(doc.get("transactions", []))
+    if market:
+        market = market.upper()
+        transactions = [t for t in transactions if t.get("market") == market]
+
+    def sort_key(t):
+        return (str(t.get("sell_date") or ""), str(t.get("created_at") or ""), str(t.get("id") or ""))
+
+    transactions.sort(key=sort_key, reverse=True)
+    return transactions
 
 
 def get_market_snapshot(user_id: str, market: str):
