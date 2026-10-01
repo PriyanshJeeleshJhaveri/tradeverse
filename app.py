@@ -225,8 +225,9 @@ def market_page(market):
 @login_required
 def transaction_history():
     user = current_user()
+    all_transactions = portfolio_db.get_transaction_history(user["id"])
     transactions = {
-        market: portfolio_db.get_transaction_history(user["id"], market)
+        market: [t for t in all_transactions if t.get("market") == market]
         for market in portfolio_db.MARKETS
     }
     return render_template(
