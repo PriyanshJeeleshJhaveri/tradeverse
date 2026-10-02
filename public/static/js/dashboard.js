@@ -1,37 +1,42 @@
 // TradeVerse dashboard (landing page) logic
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes, matches backend price cache
-const SEARCH_DEBOUNCE_MS = 300;
+const SEARCH_DEBOUNCE_MS = 400; // a little slower = fewer API calls on the free plans
 
 let searchDebounceTimer = null;
 let searchRequestSeq = 0; // guards against a slow older request overwriting a newer one
 
 
 function loadBtcHero() {
-    fetch("/api/btc")
+    apiFetch("/api/btc")
         .then((res) => res.json())
         .then((data) => {
             const priceEl = document.getElementById("btcPrice");
             const changeEl = document.getElementById("btcChange");
-            applyQuoteToElements(data, priceEl, changeEl);
+            applyQuoteToElements(data, priceEl, changeEl, "$");
         })
         .catch(() => {
             document.getElementById("btcPrice").textContent = "Unavailable";
         });
 }
 
-function applyQuoteToElements(quote, priceEl, changeEl) {
+// `prefix` is the currency symbol: "$" for Bitcoin, "" for the stock indices
+// (index values are points, not dollars).
+function applyQuoteToElements(quote, priceEl, changeEl, prefix) {
     if (!quote || quote.price === null || quote.price === undefined) {
         priceEl.textContent = "Unavailable";
         changeEl.textContent = "";
         return;
     }
 
-    priceEl.textContent = "$" + Number(quote.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    priceEl.textContent = (prefix || "") + Number(quote.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     if (quote.change !== null && quote.change !== undefined) {
         const sign = quote.change >= 0 ? "+" : "";
-        changeEl.textContent = sign + quote.change.toFixed(2) + " (" + sign + quote.change_percent.toFixed(2) + "%)";
+        const pct = (quote.change_percent !== null && quote.change_percent !== undefined)
+            ? " (" + sign + Number(quote.change_percent).toFixed(2) + "%)"
+            : "";
+        changeEl.textContent = sign + Number(quote.change).toFixed(2) + pct + (quote.proxy ? " · est." : "");
         changeEl.className = "idx-change " + (quote.change >= 0 ? "up" : "down");
     } else {
         changeEl.textContent = "";
@@ -47,7 +52,7 @@ function loadIndices() {
         "SENSEX": "idx-sensex",
     };
 
-    fetch("/api/indices")
+    apiFetch("/api/indices")
         .then((res) => res.json())
         .then((data) => {
             if (!Array.isArray(data)) return;
@@ -58,7 +63,7 @@ function loadIndices() {
 
                 const priceEl = box.querySelector(".idx-price");
                 const changeEl = box.querySelector(".idx-change");
-                applyQuoteToElements(idx, priceEl, changeEl);
+                applyQuoteToElements(idx, priceEl, changeEl, "");
             });
         })
         .catch(() => {});
@@ -74,21 +79,22 @@ function loadIndices() {
 function renderSearchResults(results, query) {
     const dropdown = document.getElementById("searchResultsDropdown");
 
-    if (!results || results.length === 0) {
-        dropdown.innerHTML = '<div class="search-dropdown-empty">No matches for "' + query + '"</div>';
+    if (!Array.isArray(results) || results.length === 0) {
+        dropdown.innerHTML = '<div class="search-dropdown-empty">No matches for "' + escapeHtml(query) + '"</div>';
         dropdown.classList.remove("hidden");
         return;
     }
 
     dropdown.innerHTML = results.map(function (r) {
-        const sub = r.type === "stock" ? (r.exchange || "Stock") : "Cryptocurrency";
+        const type = r.type === "crypto" ? "crypto" : "stock";
+        const sub = type === "stock" ? (r.exchange || "Stock") : "Cryptocurrency";
         return (
-            '<div class="search-dropdown-item" data-symbol="' + r.symbol + '" data-type="' + r.type + '" data-name="' + r.name.replace(/"/g, "&quot;") + '">' +
+            '<div class="search-dropdown-item" data-symbol="' + escapeHtml(r.symbol) + '" data-type="' + type + '" data-name="' + escapeHtml(r.name) + '">' +
                 '<div>' +
-                    '<div class="sdi-name">' + r.symbol + ' &middot; ' + r.name + '</div>' +
-                    '<div class="sdi-sub">' + sub + '</div>' +
+                    '<div class="sdi-name">' + escapeHtml(r.symbol) + ' &middot; ' + escapeHtml(r.name) + '</div>' +
+                    '<div class="sdi-sub">' + escapeHtml(sub) + '</div>' +
                 '</div>' +
-                '<span class="sdi-type-badge ' + r.type + '">' + r.type + '</span>' +
+                '<span class="sdi-type-badge ' + type + '">' + type + '</span>' +
             '</div>'
         );
     }).join("");
@@ -118,7 +124,7 @@ function runSearch(query) {
     dropdown.classList.remove("hidden");
 
     const seq = ++searchRequestSeq;
-    fetch("/api/search?q=" + encodeURIComponent(query))
+    apiFetch("/api/search?q=" + encodeURIComponent(query))
         .then(function (res) { return res.json(); })
         .then(function (data) {
             if (seq !== searchRequestSeq) return; // a newer keystroke already fired, drop this stale response
@@ -189,8 +195,10 @@ document.addEventListener("DOMContentLoaded", function () {
     loadBtcHero();
     loadIndices();
 
-    // Auto-refresh every 10 minutes to line up with the backend price cache
+    // Auto-refresh every 10 minutes to line up with the backend price cache.
+    // Skipped while the tab is hidden - saves server calls on the free plan.
     setInterval(function () {
+        if (document.hidden) return;
         loadBtcHero();
         loadIndices();
     }, REFRESH_INTERVAL_MS);

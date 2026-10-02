@@ -72,6 +72,20 @@ wallet balances from the supplied project.
 }
 ```
 
+## Performance & free-tier notes
+
+- Prices are cached in memory **and** in a shared MongoDB collection
+  (`api_cache`, auto-purged by a TTL index), so cold starts and extra Vercel
+  instances don't re-spend Twelve Data / CoinGecko free-plan credits.
+- A page that shows several holdings fetches all prices in one batched,
+  parallel step (one CoinGecko request for all coins).
+- Buy/sell orders are priced with a quote at most `TRADE_PRICE_MAX_AGE_SECONDS`
+  (default 60 s) old, and are applied with a single atomic MongoDB update, so
+  double-clicks or two open tabs cannot duplicate a sale or lose a purchase.
+- Viewing a portfolio never writes to the database.
+- Set the Vercel function region close to your Atlas cluster region for the
+  lowest latency.
+
 ## Local setup
 
 1. Create a Python virtual environment.

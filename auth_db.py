@@ -10,13 +10,20 @@ from typing import Any, Optional
 
 from pymongo import ASCENDING
 from pymongo.errors import DuplicateKeyError
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import mongo_db
 
 USERS_COLLECTION = os.getenv("MONGODB_USERS_COLLECTION", "users").strip() or "users"
 ROLES = ("USER", "ADMIN")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,30}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
+MIN_PASSWORD_LENGTH = 8
+MAX_PASSWORD_LENGTH = 128
+
+# Used to burn the same CPU time when a username doesn't exist, so response
+# time doesn't reveal which usernames are registered.
+_DUMMY_HASH = generate_password_hash("tradeverse-dummy-password")
 
 
 def _collection():
@@ -48,7 +55,7 @@ def validate_username(username: str) -> Optional[str]:
 
 def validate_email(email: str) -> Optional[str]:
     email = normalize_email(email)
-    if len(email) > 254 or "@" not in email or email.startswith("@") or email.endswith("@"):
+    if len(email) > 254 or not EMAIL_RE.match(email):
         return "Please enter a valid email address."
     return None
 
@@ -60,12 +67,28 @@ def validate_phone(phone: str) -> Optional[str]:
     return None
 
 
+def validate_password(password: str) -> Optional[str]:
+    password = password or ""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
+    return None
+
+
 def init_indexes() -> None:
     collection = _collection()
-    collection.create_index([("username_normalized", ASCENDING)], unique=True, name="username_unique")
-    collection.create_index([("email", ASCENDING)], unique=True, name="email_unique")
-    collection.create_index([("role", ASCENDING)], name="role_index")
-    collection.create_index([("created_at", ASCENDING)], name="created_at_index")
+    # One round trip to see what already exists, then only create what is missing.
+    existing = collection.index_information()
+    wanted = (
+        ("username_unique", [("username_normalized", ASCENDING)], True),
+        ("email_unique", [("email", ASCENDING)], True),
+        ("role_index", [("role", ASCENDING)], False),
+        ("created_at_index", [("created_at", ASCENDING)], False),
+    )
+    for name, keys, unique in wanted:
+        if name not in existing:
+            collection.create_index(keys, unique=unique, name=name)
 
 
 def public_user(user: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
@@ -89,7 +112,8 @@ def get_user_by_username(username: str) -> Optional[dict[str, Any]]:
 
 
 def get_user_by_id(user_id: str) -> Optional[dict[str, Any]]:
-    return _collection().find_one({"id": user_id}, {"_id": 0})
+    # The password hash is never needed after login, so don't load it.
+    return _collection().find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
 
 
 def create_user(username: str, email: str, phone: str, password: str, role: str = "USER") -> dict[str, Any]:
@@ -103,8 +127,14 @@ def create_user(username: str, email: str, phone: str, password: str, role: str 
         raise ValueError(validation_error)
     if role not in ROLES:
         raise ValueError("Invalid account role.")
-    if len(password or "") < 8:
-        raise ValueError("Password must be at least 8 characters long.")
+    password_error = validate_password(password)
+    if password_error:
+        raise ValueError(password_error)
+
+    # Nobody can sign up under the administrator's username.
+    reserved = normalize_username(os.getenv("ADMIN_USERNAME", "admin")).lower()
+    if role != "ADMIN" and username.lower() == reserved:
+        raise ValueError("Username or email already exists.")
 
     user = {
         "id": uuid.uuid4().hex,
@@ -128,10 +158,11 @@ def create_user(username: str, email: str, phone: str, password: str, role: str 
 
 
 def verify_credentials(username: str, password: str) -> Optional[dict[str, Any]]:
-    from werkzeug.security import check_password_hash
-
     user = get_user_by_username(username)
-    if user and check_password_hash(user.get("password_hash", ""), password or ""):
+    if user is None:
+        check_password_hash(_DUMMY_HASH, password or "")
+        return None
+    if len(password or "") <= MAX_PASSWORD_LENGTH and check_password_hash(user.get("password_hash", ""), password or ""):
         return user
     return None
 
@@ -150,6 +181,13 @@ def ensure_admin_user() -> Optional[dict[str, Any]]:
     existing = get_user_by_username(username)
     if existing:
         if existing.get("role") != "ADMIN":
+            # Only promote the account that really is the configured admin
+            # (matching e-mail). Otherwise anyone who registered the admin
+            # username first would be silently promoted to ADMIN.
+            if normalize_email(existing.get("email", "")) != email:
+                print("[startup] An account with the admin username exists but its e-mail "
+                      "does not match ADMIN_EMAIL; it was NOT promoted to ADMIN.")
+                return None
             _collection().update_one(
                 {"id": existing["id"]},
                 {"$set": {"role": "ADMIN", "updated_at": _utc_now()}},
@@ -163,6 +201,11 @@ def ensure_admin_user() -> Optional[dict[str, Any]]:
 
     user = create_user(username, email, phone, password, role="ADMIN")
     return user
+
+
+def delete_user(user_id: str) -> None:
+    """Remove an account (used to roll back a half-finished registration)."""
+    _collection().delete_one({"id": user_id})
 
 
 def count_users() -> int:

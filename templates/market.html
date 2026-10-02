@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ market_name }} - TradeVerse</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Poppins:wght@600;700;800&display=swap">
     <link rel="stylesheet" href="{{ url_for('local_static', filename='css/style.css') }}">
 </head>
 <body>
@@ -32,13 +35,14 @@
         <!-- Control row: hamburger / dropdown menu to switch between markets -->
         <div class="control-row">
             <div class="menu-wrap">
-                <button id="menuBtn" class="hamburger-btn" title="Choose portfolio">
+                <button id="menuBtn" class="hamburger-btn" type="button" title="Choose portfolio">
                     <span></span><span></span><span></span>
                 </button>
                 <div id="dropdownMenu" class="dropdown-menu hidden">
                     <a class="dropdown-item" href="{{ url_for('market_page', market='ISE') }}">Indian Stock Market <small>Portfolio &amp; Wallet</small></a>
                     <a class="dropdown-item" href="{{ url_for('market_page', market='USE') }}">US Stock Exchange <small>Portfolio &amp; Wallet</small></a>
                     <a class="dropdown-item" href="{{ url_for('market_page', market='CCME') }}">Crypto Currency Market Exchange <small>Portfolio &amp; Wallet</small></a>
+                    <a class="dropdown-item" href="{{ url_for('transaction_history') }}">Transaction History <small>Indian, US &amp; Crypto</small></a>
                 </div>
             </div>
             <a href="{{ url_for('dashboard') }}" class="btn btn-navy back-to-dash-btn">Back to Dashboard</a>
@@ -103,8 +107,8 @@
 
     <script src="{{ url_for('local_static', filename='js/script.js') }}"></script>
     <script>
-        window.TRADEVERSE_MARKET = "{{ market }}";
-        window.TRADEVERSE_CURRENCY_SYMBOL = "{{ currency_symbol }}";
+        window.TRADEVERSE_MARKET = {{ market|tojson }};
+        window.TRADEVERSE_CURRENCY_SYMBOL = {{ currency_symbol|tojson }};
     </script>
     <script src="{{ url_for('local_static', filename='js/market.js') }}"></script>
 </body>

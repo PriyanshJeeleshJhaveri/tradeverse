@@ -24,8 +24,24 @@ function setStatValue(elId, text, changeValue) {
     }
 }
 
-function renderChart(labels, prices, isUp) {
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-09-30 15:45:00" -> short, readable axis labels that suit the range.
+function formatChartLabel(raw, rangeKey) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(raw || "");
+    if (!m) return raw;
+    const mon = MONTH_NAMES[parseInt(m[2], 10) - 1];
+    const day = parseInt(m[3], 10);
+    const hasTime = m[4] !== undefined;
+    if (rangeKey === "24H" && hasTime) return m[4] + ":" + m[5];
+    if (rangeKey === "1W" && hasTime) return mon + " " + day + ", " + m[4] + ":" + m[5];
+    if (rangeKey === "1Y") return mon + " " + day + ", " + m[1];
+    return mon + " " + day;
+}
+
+function renderChart(rawLabels, prices, isUp, rangeKey) {
     const canvas = document.getElementById("priceChart");
+    const labels = rawLabels.map(function (l) { return formatChartLabel(l, rangeKey); });
     const lineColor = isUp ? "#1d8a3e" : "#c0392b";
     const fillColor = isUp ? "rgba(29, 138, 62, 0.12)" : "rgba(192, 57, 43, 0.12)";
 
@@ -51,7 +67,15 @@ function renderChart(labels, prices, isUp) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        // full date/time in the tooltip, short labels on the axis
+                        title: function (items) { return items.length ? rawLabels[items[0].dataIndex] : ""; },
+                    },
+                },
+            },
             scales: {
                 x: { ticks: { maxTicksLimit: 6, color: "#7a8497", font: { size: 11 } }, grid: { display: false } },
                 y: { ticks: { color: "#7a8497", font: { size: 11 } }, grid: { color: "#eef1f5" } },
@@ -70,7 +94,7 @@ function loadChart(rangeKey) {
     statusEl.textContent = "Loading chart...";
     statusEl.classList.remove("hidden");
 
-    fetch("/api/asset/" + ASSET_TYPE + "/" + encodeURIComponent(ASSET_SYMBOL) + "/chart?range=" + rangeKey)
+    apiFetch("/api/asset/" + ASSET_TYPE + "/" + encodeURIComponent(ASSET_SYMBOL) + "/chart?range=" + rangeKey)
         .then(function (res) { return res.json(); })
         .then(function (data) {
             if (data.error) {
@@ -80,7 +104,7 @@ function loadChart(rangeKey) {
             statusEl.classList.add("hidden");
 
             const isUp = data.change_percent >= 0;
-            renderChart(data.labels, data.prices, isUp);
+            renderChart(data.labels, data.prices, isUp, rangeKey);
 
             lastKnownPrice = data.current_price;
 
@@ -103,7 +127,7 @@ function loadChart(rangeKey) {
 // ---------------------------------------------------------------------------
 // Buy Now modal - a market order at the current live price. The estimated
 // total shown here uses the last price the chart fetched; the real trade is
-// always priced server-side with a fresh quote at the moment of confirming.
+// always priced server-side (with a quote at most a minute old) when confirming.
 // ---------------------------------------------------------------------------
 
 function openBuyModal() {
@@ -176,7 +200,7 @@ function submitBuy() {
     confirmBtn.textContent = "Placing order...";
     errorEl.classList.add("hidden");
 
-    fetch("/api/trade/buy", {
+    apiFetch("/api/trade/buy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: ASSET_SYMBOL, asset_type: ASSET_TYPE, quantity: quantity }),

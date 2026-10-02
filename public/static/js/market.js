@@ -7,6 +7,8 @@ const COLUMN_COUNT = 9;
 const IS_CRYPTO_MARKET = MARKET === "CCME";
 const SELLING_SUPPORTED = true;
 
+let portfolioLoadedOnce = false; // only show "Loading..." the first time, not on every refresh
+
 function formatMoney(value) {
     if (value === null || value === undefined || isNaN(value)) return "--";
     const num = Number(value);
@@ -30,7 +32,7 @@ function formatDate(isoDateStr) {
 
 function setLoadingRow(message) {
     document.getElementById("portfolioBody").innerHTML =
-        '<tr><td colspan="' + COLUMN_COUNT + '" class="loading-row">' + message + "</td></tr>";
+        '<tr><td colspan="' + COLUMN_COUNT + '" class="loading-row">' + escapeHtml(message) + "</td></tr>";
 }
 
 function renderHoldingRow(h) {
@@ -39,35 +41,38 @@ function renderHoldingRow(h) {
     const plClass = plUp ? "up" : "down";
 
     const sellNowBtn = SELLING_SUPPORTED
-        ? "<button type=\"button\" class=\"btn-sell-now\" data-lot-id=\"" + h.id + "\" data-symbol=\"" + h.name +
-          "\" data-price=\"" + h.price + "\" data-available=\"" + h.quantity + "\">Sell Now</button>"
+        ? "<button type=\"button\" class=\"btn-sell-now\" data-lot-id=\"" + escapeHtml(h.id) + "\" data-symbol=\"" + escapeHtml(h.name) +
+          "\" data-price=\"" + escapeHtml(h.price) + "\" data-available=\"" + escapeHtml(h.quantity) + "\">Sell Now</button>"
         : "<button type=\"button\" class=\"btn-sell-now\" disabled title=\"Indian stock market trading isn't available yet.\">Sell Now</button>";
 
     return (
         "<tr>" +
-            "<td>" + h.name + "</td>" +
+            "<td>" + escapeHtml(h.name) + "</td>" +
             "<td>" + formatDate(h.bought_date) + "</td>" +
             "<td class=\"num\">" + formatMoney(h.bought_price) + "</td>" +
             "<td class=\"num\">" + formatMoney(h.price) + "</td>" +
             "<td class=\"num\">" + formatQuantity(h.quantity) + "</td>" +
             "<td class=\"num\">" + formatMoney(h.total_amount) + "</td>" +
             "<td class=\"num pl-cell " + plClass + "\">" + plSign + formatMoney(h.profit_loss) + "</td>" +
-            "<td class=\"num pl-cell " + plClass + "\">" + plSign + h.profit_loss_percent.toFixed(2) + "%</td>" +
+            "<td class=\"num pl-cell " + plClass + "\">" + plSign + Number(h.profit_loss_percent).toFixed(2) + "%</td>" +
             "<td class=\"actions-cell\">" + sellNowBtn + "</td>" +
         "</tr>"
     );
 }
 
 function loadPortfolio() {
-    setLoadingRow("Loading portfolio...");
+    if (!portfolioLoadedOnce) {
+        setLoadingRow("Loading portfolio...");
+    }
 
-    fetch("/api/portfolio/" + MARKET)
+    apiFetch("/api/portfolio/" + MARKET)
         .then((res) => res.json())
         .then((data) => {
             if (data.error) {
-                setLoadingRow(data.error);
+                if (!portfolioLoadedOnce) setLoadingRow(data.error);
                 return;
             }
+            portfolioLoadedOnce = true;
 
             document.getElementById("walletAmount").textContent = formatMoney(data.wallet);
 
@@ -90,7 +95,7 @@ function loadPortfolio() {
             });
         })
         .catch(() => {
-            setLoadingRow("Could not load portfolio. Please try again.");
+            if (!portfolioLoadedOnce) setLoadingRow("Could not load portfolio. Please try again.");
         });
 }
 
@@ -181,7 +186,7 @@ function submitSell() {
     confirmBtn.textContent = "Placing order...";
     errorEl.classList.add("hidden");
 
-    fetch("/api/trade/sell", {
+    apiFetch("/api/trade/sell", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ market: MARKET, lot_id: activeLot.lotId, quantity: quantity }),
@@ -243,5 +248,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
     loadPortfolio();
 
-    setInterval(loadPortfolio, REFRESH_INTERVAL_MS);
+    // Refresh on a timer, but not while the tab is hidden (saves server calls on the free plan).
+    setInterval(function () {
+        if (!document.hidden) loadPortfolio();
+    }, REFRESH_INTERVAL_MS);
 });
